@@ -500,13 +500,15 @@ async function notifyTarget(row, cfg, fetchImpl = fetch) {
   const timeoutMs = Number(process.env.CROSS_OUTBOUND_TIMEOUT_MS || 10000);
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    const timestamp = Date.now().toString();
     const response = await fetchImpl(cfg.receiverUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
         'X-Platform-Origin': 'PHARAOH',
-        'X-Platform-Signature': auth.signBody(body, cfg.target)
+        'X-Platform-Timestamp': timestamp,
+        'X-Platform-Signature': auth.signBody(body, cfg.target, timestamp)
       },
       body: JSON.stringify(body),
       signal: controller.signal
