@@ -101,6 +101,7 @@ Module._load = function(request, parent, isMain) {
   const table2 = { id: 2, numero: 2, turno: 2 };
   const rollover = await tm.materializzaRolloverEntrata({ sourceTavola: table1, targetTavola: table2, targetTurno: 2, cassaWallet: CASSA, client: {} });
   assert.equal(rollover.placement.casellaOccupata, 1);
+  assert.equal(rollover.placement.numeroPosizionaleGlobale, 7, 'Tavola 2/casella 1 deve essere globale 7');
   assert.equal(rollover.placement.tavolaSdoppiamento, null);
   assert.equal(list(2)[0].tipo, 'ROLLOVER');
   assert.equal(list(2)[0].wallet, CASSA);
@@ -127,6 +128,7 @@ Module._load = function(request, parent, isMain) {
       client: {}
     });
     assert.equal(r.casellaOccupata, i + 1);
+    assert.equal(r.numeroPosizionaleGlobale, 7 + i, `Donatore Tavola 2 deve avere globale ${7 + i}`);
     assert.equal(r.tavolaCompleta, i === 5);
   }
   assert.equal(list(2).length, 6, 'Tavola 2 = 1 rollover + 5 nuovi ingressi');
@@ -137,6 +139,7 @@ Module._load = function(request, parent, isMain) {
   reserved.set('3:3', [1, 4]);
   const rolloverReserved = await tm.materializzaRolloverEntrata({ sourceTavola: table2, targetTavola: table3, targetTurno: 3, cassaWallet: CASSA, client: {} });
   assert.equal(rolloverReserved.placement.casellaOccupata, 2, 'Rollover deve saltare casella Funzione 1');
+  assert.equal(rolloverReserved.placement.numeroPosizionaleGlobale, 14, 'Tavola 3/casella 2 deve essere globale 14');
   const donor = await tm.posizionaDonatore({
     tavolaId: table3.id,
     tavolaNumero: table3.numero,
@@ -152,6 +155,7 @@ Module._load = function(request, parent, isMain) {
     client: {}
   });
   assert.equal(donor.casellaOccupata, 3, 'Rientro deve saltare caselle Funzione 1 e 4');
+  assert.equal(donor.numeroPosizionaleGlobale, 15, 'Tavola 3/casella 3 deve essere globale 15');
   assert.ok(![1, 4].includes(rolloverReserved.placement.casellaOccupata));
   assert.ok(![1, 4].includes(donor.casellaOccupata));
 
@@ -163,6 +167,18 @@ Module._load = function(request, parent, isMain) {
   assert.ok(!flow.includes('ENTRY_RESERVE_WALLET'));
   assert.ok(!api.includes('/api/admin/doni-pendenti/entry-reserve/process'));
   assert.ok(dbSource.includes("pf.stato IN ('RESERVED','MATERIALIZED')"), 'Ticket ordinari devono rispettare prenotazioni Funzioni');
+
+  const expected = [
+    [1, 1, 1], [1, 6, 6],
+    [2, 1, 7], [2, 6, 12],
+    [3, 1, 13], [3, 6, 18],
+    [4, 1, 19], [4, 6, 24],
+    [5, 1, 25], [5, 6, 30],
+    [6, 1, 31], [6, 6, 36]
+  ];
+  for (const [tavola, casella, globale] of expected) {
+    assert.equal(tm.calcolaPosizioneGlobaleEntrata(tavola, casella), globale);
+  }
 
   console.log('ENTRY_ROLLOVER_100_PASS');
   console.log('PASS Tavola 1: 6 donatori reali; Tavola 2+: 100 Cassa PHARAOH + 5 nuovi ingressi; rollover/rientri non invadono prenotazioni Funzioni');

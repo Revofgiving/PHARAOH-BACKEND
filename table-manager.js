@@ -36,6 +36,25 @@ function getLivelloConfig(livello) {
   return configs.find(c => c.numero === livello) || null;
 }
 
+/**
+ * Numero posizionale assoluto del livello ENTRATA.
+ * Ogni tavola occupa sempre un blocco fisso di 6 valori:
+ * Tavola 1 = 1..6, Tavola 2 = 7..12, Tavola 3 = 13..18, ecc.
+ * Il valore dipende esclusivamente da tavola + casella, quindi include anche
+ * ROLLOVER Cassa e Funzioni materializzate/prenotate.
+ */
+function calcolaPosizioneGlobaleEntrata(tavolaNumero, casella) {
+  const tavola = Number(tavolaNumero);
+  const slot = Number(casella);
+  if (!Number.isInteger(tavola) || tavola < 1) {
+    throw new Error(`Numero tavola Entrata non valido: ${tavolaNumero}`);
+  }
+  if (!Number.isInteger(slot) || slot < 1 || slot > 6) {
+    throw new Error(`Casella Entrata non valida: ${casella}`);
+  }
+  return ((tavola - 1) * 6) + slot;
+}
+
 // ========================================
 // CREAZIONE TAVOLE
 // ========================================
@@ -306,6 +325,9 @@ async function posizionaDonatore({
     tavolaSdoppiamento,
     tavolaCompleta,
     casellaOccupata: casella,
+    numeroPosizionaleGlobale: Number(livello) === 0
+      ? calcolaPosizioneGlobaleEntrata(tavolaNumero, casella)
+      : null,
     totaleCaselle: capacitaEffettiva
   };
 }
@@ -821,5 +843,6 @@ module.exports = {
   countTavoleInTurno,
   getTavoleSdoppiamentoTurno,
   getLivelloConfig,
+  calcolaPosizioneGlobaleEntrata,
   LIVELLI
 };

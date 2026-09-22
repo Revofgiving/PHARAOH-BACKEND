@@ -295,7 +295,17 @@ app.get('/api/account/:wallet/posizioni', async (req, res) => {
         p.created_at,
         p.account_id AS percorso_id,
         COALESCE(p.account_sigla, a.sigla, a.ticket_number::text) AS sigla_percorso,
-        a.ticket_number AS numero_posizionale,
+        COALESCE(
+          ep.numero_posizionale,
+          CASE
+            WHEN t.sezione = 'ENTRATA' AND t.livello = 0
+            THEN (((t.numero - 1) * 6) + p.casella)::bigint
+            ELSE NULL
+          END
+        ) AS numero_posizionale,
+        a.ticket_number AS ticket_number,
+        ep.entrata_tavola_numero,
+        ep.entrata_casella,
         a.tipo AS tipo_percorso,
         a.origin_kind AS origine_percorso,
         t.numero AS tavola_numero,
@@ -305,6 +315,20 @@ app.get('/api/account/:wallet/posizioni', async (req, res) => {
       FROM posizioni p
       JOIN tavole t ON t.id = p.tavola_id
       LEFT JOIN accounts a ON a.id = p.account_id
+      LEFT JOIN LATERAL (
+        SELECT
+          te.numero AS entrata_tavola_numero,
+          pe.casella AS entrata_casella,
+          (((te.numero - 1) * 6) + pe.casella)::bigint AS numero_posizionale
+        FROM posizioni pe
+        JOIN tavole te ON te.id = pe.tavola_id
+        WHERE pe.account_id = a.id
+          AND te.sezione = 'ENTRATA'
+          AND te.livello = 0
+          AND pe.tipo <> 'ROLLOVER'
+        ORDER BY te.numero ASC, pe.casella ASC, pe.id ASC
+        LIMIT 1
+      ) ep ON TRUE
       WHERE LOWER(p.wallet) = $1
       ORDER BY p.created_at DESC, p.id DESC
       LIMIT 500
