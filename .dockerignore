@@ -1,0 +1,54 @@
+# Dipendenze (reinstallate da npm ci)
+node_modules/
+
+# Secrets e template — le variabili arrivano dal pannello Coolify
+.env
+.env.*
+
+# Git
+.git/
+.gitignore
+
+# Simulazioni di test (non servono in produzione)
+simulate.js
+simulate-1.js
+simulate-payouts.js
+scripts/
+FORENSIC_TESTS/
+FORENSIC_FIXTURES/
+FORENSIC_REPORTS/
+PATCH_*
+REPORT_*
+
+# Copie, backup e pacchetti locali
+* copia.js
+*.backup-*
+*.backup*
+*.bak-*
+*.bak*
+*.bak
+.backup_*/
+.backup*/
+DATABASE_BACKUPS/
+*.zip
+
+# Documentazione locale
+*.md
+*.html
+pharaoh-logo.png
+
+# Configurazioni di piattaforme non usate dal deploy Coolify/Dockerfile
+docker-compose.yml
+railway.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

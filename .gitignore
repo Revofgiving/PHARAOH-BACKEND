@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+node_modules 2/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# macOS junk
+.DS_Store
+._*
+
+# Finder duplicates
+* 2.*
+* 2
+
+# Copie e backup locali storici (mai versionare)
+* copia.js
+*.backup-*
+*.bak-*
+*.bak
+.backup_*/
+DATABASE_BACKUPS/
+
+# Pacchetti di verifica locali
+*.zip
+
+# Logs
+*.log
+npm-debug.log*
+
+# IDE
+.idea/
+.vscode/
+*.swp

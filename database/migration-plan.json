@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "migrations": [
+    {
+      "id": "0001_baseline",
+      "description": "Schema PHARAOH consolidato dopo il Punto 23",
+      "file": "database/init.sql",
+      "sha256": "8024b57bd7c516471db3a0cd4e90911adc8e2c6075545dc98e0e0e7059be92fc"
+    },
+    {
+      "id": "0002_direct_donation_sessions",
+      "description": "Sessioni forensi end-to-end DIRECT 2 ROG + 100 PHARAOH = 1 posizione",
+      "file": "database/0002_direct_donation_sessions.sql",
+      "sha256": "de35858b685f234289255a7c733c8419eff7b9bc6144def090d5911cd8daa29c",
+      "acceptedAppliedSha256": [
+        "8228812230a6e84b51a492c5f850cb2b0b7015073501475de1812ab86bd4f003"
+      ]
+    },
+    {
+      "id": "0003_gift_sessions",
+      "description": "Sessioni forensi Carta Regalo con pagatore e beneficiario distinti",
+      "file": "database/0003_gift_sessions.sql",
+      "sha256": "cd1c2e4563175622a13dddce4b00f3091d4c0182abcb22e8f67e2890ad37258e",
+      "acceptedAppliedSha256": [
+        "e14f0b7b69f98885375c3479f6841a4aef5796e7c7058650edd6d9560e48413a"
+      ]
+    },
+    {
+      "id": "0004_cross_movements",
+      "description": "URANUS_TO_PHARAOH e movimenti automatici RHA PHARAOH verso ROG/URANUS",
+      "file": "database/0004_cross_movements.sql",
+      "sha256": "38391fb1839b000b75891577f6313b533f26f76cc1f1e6321486c4d981e1c233"
+    },
+    {
+      "id": "0005_rha_dual_300_200",
+      "description": "RHA V2: ogni uscita primaria/secondaria -> 300 USDC ROG/150 dual + 200 USDC URANUS/10 dual al ricevente RHA",
+      "file": "database/0005_rha_dual_300_200.sql",
+      "sha256": "f07ec06413268c62525fc93f76e7c22280fae83a6c924fd199072d20431bd96f"
+    },
+    {
+      "id": "0006_thot_humanitarian_reentry",
+      "description": "THOT secondari: 500 USDC Cassa PHARAOH per PROGETTI_UMANITARI + 500 USDC in 5 rientri ENTRATA x 100 al ricevente",
+      "file": "database/0006_thot_humanitarian_reentry.sql",
+      "sha256": "2b6d5646a576209ed16d3c2bc12dc5dd10e18ad7ecfd09a2212693694c4d0a3c"
+    },
+    {
+      "id": "0007_iside_reentry_receiver_gift",
+      "description": "ISIDE secondari: 5.000 USDC in 50 rientri ENTRATA x 100 + 6.000 USDC dono al ricevente; payout unico 25.000 USDC",
+      "file": "database/0007_iside_reentry_receiver_gift.sql",
+      "sha256": "c8f3becc972cebbc01c733b6ebdc4b58ff4a08e054185d8059ae2f0395ae2592"
+    },
+    {
+      "id": "0008_remove_doni_credito",
+      "description": "Rimuove Doni a Credito, contenitore 5.3, credito_id e tipi CREDITO dal modello operativo",
+      "file": "database/0008_remove_doni_credito.sql",
+      "sha256": "667ec6e9db8cca429ee1020ceccd5459659026cacb4ee7cfa35a48cd7f7285a1"
+    },
+    {
+      "id": "0009_remove_dono_al_volo_staff_legacy",
+      "description": "Rimuove Dono al Volo/lista 5.1 e campi legacy omaggi staff RHA; RHA corrente resta 300 ROG + 200 URANUS",
+      "file": "database/0009_remove_dono_al_volo_staff_legacy.sql",
+      "sha256": "52892ea7d851973f4ed12f9574cc6981ef2b43606160f69fd611acaf3eba8714"
+    },
+    {
+      "id": "0010_secondary_identity_wallets",
+      "description": "Wallet reale condiviso per Primario/Perpetuo/Gemello; identita per account_id+sigla; rientri THOT/ISIDE come nuove radici ENTRATA autonome",
+      "file": "database/0010_secondary_identity_wallets.sql",
+      "sha256": "0f7ba38bc6b43e480e30d5bc8b68c6e5650f08e42296a2117db4e5d24de2ba9a"
+    },
+    {
+      "id": "0011_entry_function_reservation_guard",
+      "description": "Protegge ticket e caselle Entrata riservate alle Funzioni; rientri/ingressi ordinari non possono consumarle",
+      "file": "database/0011_entry_function_reservation_guard.sql",
+      "sha256": "cc3c1ecb3f189b177e17afb4f3254e1d63e84308cdb68cd6afe63d950fb73ab7"
+    },
+    {
+      "id": "0012_entry_rollover_100",
+      "description": "Entrata: Tavola 1 con 6 donatori; dalla Tavola 2 riporto 100 USDC Cassa PHARAOH + 5 nuovi ingressi, senza invadere prenotazioni Funzioni",
+      "file": "database/0012_entry_rollover_100.sql",
+      "sha256": "7ef897912e692e0abf8daa14519eb63f5bc5d63043ec7a140da6a47d5de1cb9a"
+    },
+    {
+      "id": "0013_pharaoh_treasury_registry_v3",
+      "description": "Pharaoh Treasury Registry V3: prove on-chain dei soli movimenti USDC da/per la Cassa PHARAOH",
+      "file": "database/0013_pharaoh_treasury_registry_v3.sql",
+      "sha256": "36453ac94b4264374dfc71e89921e310f35d1fcb191ef4c8bbe816819696ada3"
+    },
+    {
+      "id": "0014_rog_rha_registration_evidence",
+      "description": "Uscite RHA PHARAOH -> ROG: nonce/hash/donationId/prova durevole di registerDonation ROG",
+      "file": "database/0014_rog_rha_registration_evidence.sql",
+      "sha256": "83dd5e58eda0002e8193344fcd14b644b21175835abd15b73ba2d059faba5c34"
+    },
+    {
+      "id": "0015_direct_rog_async_gate",
+      "description": "DIRECT: gate economico sui 2 USDC ricevuti in Cassa ROG; fulfillment ROG asincrono, persistente e non bloccante; posizione HUMAN esposta senza PILETTA",
+      "file": "database/0015_direct_rog_async_gate.sql",
+      "sha256": "b18bfc87682f8ab5c465bbc4df247908fdc79ca05a8bf5c644f5008f052a27f7"
+    },
+    {
+      "id": "0016_gift_pending_rog_beneficiary",
+      "description": "Carta Regalo PHARAOH: beneficiario inizialmente NULL fino alla scelta verificata in ROG",
+      "file": "database/0016_gift_pending_rog_beneficiary.sql",
+      "sha256": "ef222ac26a4ca4f41e59637b19005cc117674993e21eefc47c16a06f254e76e9"
+    },
+    {
+      "id": "0017_gift_dynamic_rog_amount",
+      "description": "Carta Regalo PHARAOH: importo ROG dinamico, minimo 2 USDC e multiplo intero di 2",
+      "file": "database/0017_gift_dynamic_rog_amount.sql",
+      "sha256": "2fb47583ac54a944dab0d836070fe1a81be1cda0994c585b2af2803831152419"
+    },
+    {
+      "id": "0018_gift_rog_exact_2",
+      "description": "Carta Regalo PHARAOH: ripristina importo ROG fisso a 2 USDC; il beneficiario non e bloccato dalla Community durante il dono",
+      "file": "database/0018_gift_rog_exact_2.sql",
+      "sha256": "e7051eb0e632dfde4a78e454e933c3be1bc6668ca98cd17f9602e54bd0a08302"
+    },
+    {
+      "id": "0019_direct_rog_position_mandatory",
+      "description": "DIRECT: ogni nuova posizione PHARAOH richiede una nuova HUMAN ROG; posizione ROG univoca e non riutilizzabile",
+      "file": "database/0019_direct_rog_position_mandatory.sql",
+      "sha256": "fa4484d5b201e7b8a0d0b6f4d3c021863de28e418bc24f67e4c23a7e019d868d"
+    }
+  ]
+}

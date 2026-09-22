@@ -1,0 +1,43 @@
+'use strict';
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
+const { ethers } = require('ethers');
+const pg = require('./pg-connection-manager');
+const ERC20_ABI = ['event Transfer(address indexed from, address indexed to, uint256 value)'];
+const USDC_DECIMALS = 6;
+const POLYGON_CHAIN_ID = 137;
+const DEFAULT_MIN_CONFIRMATIONS = 1;
+const DEFAULT_RPC_ATTEMPTS = 2;
+const TXHASH_REGEX = /^0x[a-fA-F0-9]{64}$/;
+const WALLET_REGEX = /^0x[a-fA-F0-9]{40}$/;
+function blockchainError(code, message, { retryable = false, cause = null } = {}) { const error = new Error(message); error.code = code; error.retryable = retryable; if (cause) error.cause = cause; return error; }
+function readPositiveInteger(value, fallback, max = 1000) { const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 1 || parsed > max) return fallback; return parsed; }
+function getRequiredConfirmations() { return readPositiveInteger(process.env.POLYGON_MIN_CONFIRMATIONS, DEFAULT_MIN_CONFIRMATIONS, 1000); }
+function getExpectedChainId() { return readPositiveInteger(process.env.POLYGON_CHAIN_ID, POLYGON_CHAIN_ID, Number.MAX_SAFE_INTEGER); }
+async function rpcCall(label, operation, attempts = DEFAULT_RPC_ATTEMPTS) { const safeAttempts = readPositiveInteger(attempts, DEFAULT_RPC_ATTEMPTS, 5); let lastError; for (let attempt = 1; attempt <= safeAttempts; attempt += 1) { try { return await operation(); } catch (error) { lastError = error; if (attempt < safeAttempts) await new Promise(resolve => setTimeout(resolve, 150 * attempt)); } } throw blockchainError('BLOCKCHAIN_RPC_ERROR', `Errore RPC Polygon durante ${label}: ${lastError?.message || 'errore sconosciuto'}`, { retryable: true, cause: lastError }); }
+let provider = null;
+function getProvider() { if (!provider) { const rpcUrl = process.env.POLYGON_RPC_URL; if (!rpcUrl) throw new Error('POLYGON_RPC_URL non configurata'); provider = new ethers.JsonRpcProvider(rpcUrl); } return provider; }
+async function verificaDonazione({ txHash, walletMittente, importoMinimo = 100, destinatarioWallet = null, maxPosizioni = null, skipDonationReplayCheck = false }, dependencies = {}) {
+  const destinatario = destinatarioWallet || process.env.PHARAOH_TREASURY_WALLET; const usdcAddress = process.env.USDC_CONTRACT_ADDRESS;
+  if (!destinatario) throw new Error('PHARAOH_TREASURY_WALLET non configurato'); if (!usdcAddress) throw new Error('USDC_CONTRACT_ADDRESS non configurato');
+  if (!txHash || typeof txHash !== 'string' || !TXHASH_REGEX.test(txHash)) throw blockchainError('BLOCKCHAIN_INVALID_TX_HASH', 'txHash non valido (formato: 0x + 64 hex chars)');
+  if (!walletMittente || typeof walletMittente !== 'string' || !WALLET_REGEX.test(walletMittente)) throw blockchainError('BLOCKCHAIN_INVALID_SENDER', 'walletMittente non valido (formato: 0x + 40 hex chars)');
+  if (!WALLET_REGEX.test(destinatario)) throw blockchainError('BLOCKCHAIN_INVALID_TREASURY', 'Wallet destinatario non è un indirizzo Ethereum valido');
+  if (!WALLET_REGEX.test(usdcAddress)) throw blockchainError('BLOCKCHAIN_INVALID_USDC', 'USDC_CONTRACT_ADDRESS non è un indirizzo Ethereum valido');
+  const normalizedTxHash = txHash.toLowerCase(); const normalizedSender = walletMittente.toLowerCase(); const normalizedRecipient = destinatario.toLowerCase(); const normalizedUsdc = usdcAddress.toLowerCase(); const database = dependencies.pg || pg;
+  if (!skipDonationReplayCheck) { const txGiaUsata = await database.queryOne('SELECT id FROM donazioni WHERE LOWER(tx_hash) = $1', [normalizedTxHash]); if (txGiaUsata) throw blockchainError('BLOCKCHAIN_TX_REPLAY', 'Transazione già registrata nel sistema'); }
+  const prov = dependencies.provider || getProvider(); const rpcAttempts = dependencies.rpcAttempts || DEFAULT_RPC_ATTEMPTS; const network = await rpcCall('verifica rete', () => prov.getNetwork(), rpcAttempts); const expectedChainId = getExpectedChainId(); if (Number(network?.chainId) !== expectedChainId) throw blockchainError('BLOCKCHAIN_WRONG_NETWORK', `Rete errata: attesa chainId ${expectedChainId}, trovata ${network?.chainId ?? 'sconosciuta'}`);
+  const receipt = await rpcCall('lettura ricevuta', () => prov.getTransactionReceipt(normalizedTxHash), rpcAttempts); if (!receipt) throw blockchainError('BLOCKCHAIN_TX_PENDING_OR_NOT_FOUND', `Transazione ${normalizedTxHash} non trovata su Polygon (potrebbe essere in pending)`, { retryable: true });
+  if (Number(receipt.status) !== 1) throw blockchainError('BLOCKCHAIN_TX_REVERTED', `Transazione ${normalizedTxHash} fallita on-chain (status=${receipt.status})`); if (receipt.transactionHash && receipt.transactionHash.toLowerCase() !== normalizedTxHash) throw blockchainError('BLOCKCHAIN_RECEIPT_MISMATCH', 'Hash della ricevuta non corrispondente alla transazione richiesta'); if (!Number.isInteger(Number(receipt.blockNumber)) || !TXHASH_REGEX.test(receipt.blockHash || '')) throw blockchainError('BLOCKCHAIN_INCOMPLETE_RECEIPT', 'Ricevuta Polygon priva di blocco o block hash valido');
+  const currentBlock = await rpcCall('conteggio conferme', () => prov.getBlockNumber(), rpcAttempts); const confirmations = Number(currentBlock) - Number(receipt.blockNumber) + 1; const requiredConfirmations = getRequiredConfirmations(); if (!Number.isInteger(confirmations) || confirmations < requiredConfirmations) throw blockchainError('BLOCKCHAIN_CONFIRMATIONS_PENDING', `Conferme insufficienti: richieste ${requiredConfirmations}, disponibili ${Math.max(0, confirmations || 0)}`, { retryable: true });
+  if (!receipt.from || receipt.from.toLowerCase() !== normalizedSender) throw blockchainError('BLOCKCHAIN_SENDER_MISMATCH', `Mittente non corrisponde: atteso ${walletMittente}, trovato ${receipt.from}`);
+  const iface = new ethers.Interface(ERC20_ABI); let importoEffettivoWei = 0n; const transferLogIndexes = [];
+  for (const log of receipt.logs || []) { if (!log.address || log.address.toLowerCase() !== normalizedUsdc) continue; try { const parsed = iface.parseLog(log); if (!parsed || parsed.name !== 'Transfer') continue; const from = parsed.args.from.toLowerCase(); const to = parsed.args.to.toLowerCase(); const value = parsed.args.value; if (from === normalizedSender && to === normalizedRecipient) { importoEffettivoWei += value; transferLogIndexes.push(Number.isInteger(log.index) ? log.index : (Number.isInteger(log.logIndex) ? log.logIndex : null)); } } catch (_) {} }
+  if (importoEffettivoWei === 0n) throw blockchainError('BLOCKCHAIN_TRANSFER_NOT_FOUND', `Nessun trasferimento USDC da ${walletMittente} verso ${destinatario} trovato in ${normalizedTxHash}`);
+  const importoMinimoWei = ethers.parseUnits(importoMinimo.toString(), USDC_DECIMALS); if (importoEffettivoWei < importoMinimoWei) throw blockchainError('BLOCKCHAIN_AMOUNT_INSUFFICIENT', `Importo insufficiente: minimo ${importoMinimo} USDC, trovato ${ethers.formatUnits(importoEffettivoWei, USDC_DECIMALS)} USDC`); if (importoEffettivoWei % importoMinimoWei !== 0n) throw blockchainError('BLOCKCHAIN_AMOUNT_NOT_EXACT_MULTIPLE', `Importo non valido: ${ethers.formatUnits(importoEffettivoWei, USDC_DECIMALS)} USDC non e un multiplo esatto di ${importoMinimo} USDC`);
+  const numeroPosizioniBig = importoEffettivoWei / importoMinimoWei; const configuredMax = maxPosizioni == null ? Number(process.env.PHARAOH_MAX_DIRECT_POSITIONS || 10) : Number(maxPosizioni); if (!Number.isInteger(configuredMax) || configuredMax < 1 || configuredMax > 1000) throw blockchainError('BLOCKCHAIN_CONFIG_INVALID', 'Massimo posizioni non valido'); if (numeroPosizioniBig > BigInt(configuredMax)) throw blockchainError('BLOCKCHAIN_AMOUNT_TOO_HIGH', `Massimo ${configuredMax} posizioni per singolo evento`);
+  const numeroPosizioni = Number(numeroPosizioniBig); const importoEffettivo = Number(ethers.formatUnits(importoEffettivoWei, USDC_DECIMALS)); const verifiedAt = new Date().toISOString(); const proof = { version: 1, network: network?.name || 'polygon', chainId: expectedChainId, txHash: normalizedTxHash, blockNumber: Number(receipt.blockNumber), blockHash: receipt.blockHash.toLowerCase(), confirmations, requiredConfirmations, tokenContract: normalizedUsdc, from: normalizedSender, to: normalizedRecipient, amountBaseUnits: importoEffettivoWei.toString(), amountUsdc: importoEffettivo, transferLogIndexes, verifiedAt };
+  return { valida: true, txHash: normalizedTxHash, wallet: normalizedSender, importoEffettivo, numeroPosizioni, proof };
+}
+function isDevSkip(txHash) { return process.env.NODE_ENV !== 'production' && txHash === 'DEV_SKIP'; }
+module.exports = { verificaDonazione, isDevSkip, getRequiredConfirmations, getExpectedChainId, POLYGON_CHAIN_ID };

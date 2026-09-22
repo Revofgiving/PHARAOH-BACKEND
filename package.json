@@ -1,0 +1,47 @@
+{
+  "name": "pharaoh-backend",
+  "version": "1.0.0",
+  "description": "Backend per il Sistema PHARAOH - Economia Circolare a 1+5 Livelli",
+  "main": "api-server.js",
+  "scripts": {
+    "start": "node api-server.js",
+    "dev": "node --watch api-server.js",
+    "init-db": "node -e \"require('./db-manager').initDatabase().then(() => process.exit(0))\"",
+    "test": "node scripts/run-forensic-tests.js",
+    "test:forensic": "node scripts/run-forensic-tests.js",
+    "test:direct-gift": "node scripts/test-direct-gift-static.js",
+    "test:cross": "node scripts/test-cross-forensic.js",
+    "test:migrations": "node scripts/test-migration-compat.js",
+    "db:plan": "node ops/db-migrate.js plan",
+    "db:status": "node ops/db-migrate.js status",
+    "db:migrate": "node ops/db-migrate.js up",
+    "db:verify": "node ops/db-migrate.js verify",
+    "deploy:preflight": "node ops/deploy-preflight.js static",
+    "deploy:preflight:production": "node ops/deploy-preflight.js production",
+    "deploy:preflight:database": "node ops/deploy-preflight.js database",
+    "deploy:preflight:integrations": "node ops/integration-preflight.js",
+    "db:backup:plan": "node ops/db-backup.js",
+    "db:restore:plan": "node ops/db-restore.js",
+    "test:rha-dual": "node scripts/test-rha-dual-allocation-static.js && node scripts/test-rha-dual-allocation-dynamic.js",
+    "test:thot": "node scripts/test-thot-humanitarian-reentry.js",
+    "test:iside": "node scripts/test-iside-reentry-receiver-gift.js",
+    "test:no-credito-no-dono-al-volo": "node scripts/test-no-credit-no-dono-al-volo.js",
+    "test:entry-rollover": "node scripts/test-entry-rollover-100.js",
+    "test:registry-v3": "node scripts/test-pharaoh-registry-v3.js",
+    "test:rog-rha-registration": "node scripts/test-rog-rha-registration.js",
+    "test:direct-rog-external": "node scripts/test-direct-rog-external-gate.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.17.0",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.2.0",
+    "multer": "^2.2.0",
+    "pg": "^8.13.0"
+  },
+  "engines": {
+    "node": ">=22.0.0 <25"
+  }
+}
