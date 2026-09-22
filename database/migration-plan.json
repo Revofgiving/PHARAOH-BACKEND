@@ -116,10 +116,19 @@
       "sha256": "e7051eb0e632dfde4a78e454e933c3be1bc6668ca98cd17f9602e54bd0a08302"
     },
     {
-      "id": "0019_direct_rog_position_mandatory",
+      "id": "0019_direct_rog_position_recovery",
+      "description": "DIRECT recovery: verifica server-to-server della posizione HUMAN ROG e vincolo anti-replay alla sessione PHARAOH",
+      "file": "database/0019_direct_rog_position_recovery.sql",
+      "sha256": "6a725c520c8090047aa7182c46dfd98dd8a2ee06cd7e82f509d06e25bba1b6eb",
+      "acceptedAppliedSha256": [
+        "86a670e94f01a3ae2fbbd48156dc1ac36f73c520d48e22d79a46d49d62c12f1f"
+      ]
+    },
+    {
+      "id": "0020_direct_rog_position_mandatory",
       "description": "DIRECT: ogni nuova posizione PHARAOH richiede una nuova HUMAN ROG; posizione ROG univoca e non riutilizzabile",
-      "file": "database/0019_direct_rog_position_mandatory.sql",
-      "sha256": "fa4484d5b201e7b8a0d0b6f4d3c021863de28e418bc24f67e4c23a7e019d868d"
+      "file": "database/0020_direct_rog_position_mandatory.sql",
+      "sha256": "3e7765f4d5748125b892c6a37bf1335d2aef43f82cae3b31899edc2d4a0eab07"
     }
   ]
 }
