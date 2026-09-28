@@ -64,7 +64,44 @@ async function verifyRogRegistration({ registerTxHash, wallet, amountUsdc, donat
 async function finalizeRogDonation({ wallet, amountUsdc, usdcTxHash, registerTxHash, donationId }) {
   const donor = normalizeWallet(wallet);
   const registrationHash = normalizeHash(registerTxHash, 'rogRegisterTxHash');
-  const registerPayload = await rogApi._rogRequest('/api/donation/register', { method: 'POST', timeoutMs: Number(process.env.ROG_API_TIMEOUT_MS || 30000), body: { donationId: String(donationId), donor, amount: Number(amountUsdc), txHash: normalizeHash(usdcTxHash, 'rogUsdcTxHash'), registerTxHash: registrationHash, donationType: 'standard' } });
+  const txHash = normalizeHash(usdcTxHash, 'rogUsdcTxHash');
+  const registerBody = (donationType) => ({
+    donationId: String(donationId),
+    donor,
+    amount: Number(amountUsdc),
+    txHash,
+    registerTxHash: registrationHash,
+    donationType
+  });
+
+  let registerPayload;
+  try {
+    // Prima donazione ROG: tipo standard.
+    registerPayload = await rogApi._rogRequest('/api/donation/register', {
+      method: 'POST',
+      timeoutMs: Number(process.env.ROG_API_TIMEOUT_MS || 30000),
+      body: registerBody('standard')
+    });
+  } catch (error) {
+    // Un wallet che possiede gia posizioni ROG registra la nuova operazione
+    // come "rientro". Se la stessa donationId/tx e gia stata registrata da ROG
+    // come rientro, il tentativo "standard" e correttamente rifiutato con
+    // DONATION_TYPE_CONFLICT. In quel solo caso ritentiamo idempotentemente
+    // con "rientro": non viene creata una nuova donazione e non viene chiesta
+    // una nuova transazione al donatore.
+    const payloadCode = String(error?.payload?.code || '').toUpperCase();
+    const payloadMessage = String(error?.payload?.message || error?.payload?.error || error?.message || '').toLowerCase();
+    const typeConflict = payloadCode === 'DONATION_TYPE_CONFLICT'
+      || payloadMessage.includes('tipo di donazione differente');
+
+    if (!typeConflict) throw error;
+
+    registerPayload = await rogApi._rogRequest('/api/donation/register', {
+      method: 'POST',
+      timeoutMs: Number(process.env.ROG_API_TIMEOUT_MS || 30000),
+      body: registerBody('rientro')
+    });
+  }
   let completion; try { completion = await rogApi._rogRequest('/api/donation/verify', { method: 'POST', timeoutMs: Number(process.env.ROG_COMPLETION_API_TIMEOUT_MS || 25000), body: { donationId: String(donationId) } }); } catch (error) { const payload = error?.payload || null; const pending = payload?.status === 'ONCHAIN_COMPLETION_PENDING' || payload?.retryable === true; if (pending || error?.message?.includes('ONCHAIN_COMPLETION_PENDING')) throw makeError('Completamento ROG ancora in conferma on-chain. Riprovare.', 'ROG_DONATION_COMPLETION_PENDING', true); throw error; }
   if (completion?.success !== true || completion?.status !== 'COMPLETED') throw makeError('ROG non ha confermato la donazione come COMPLETED', 'ROG_DONATION_NOT_COMPLETED', true);
   if (String(completion.rgxOwnerWallet || '').toLowerCase() !== donor) throw makeError('ROG ha attribuito la donazione a un wallet differente', 'ROG_DONATION_OWNER_MISMATCH');
