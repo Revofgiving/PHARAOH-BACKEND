@@ -255,8 +255,7 @@ const REQUIRED_PROD_VARS = [
   'PHARAOH_REGISTRY_PRIVATE_KEY',
   'PHARAOH_REGISTRY_WORKER_ENABLED',
   'URANUS_TREASURY_WALLET',
-  'ROG_CROSS_PLATFORM_SECRET',
-  'URANUS_CROSS_PLATFORM_SECRET',
+  'CROSS_PLATFORM_SECRET',
   'ROG_CROSS_INGRESS_URL',
   'URANUS_CROSS_INGRESS_URL',
   'CROSS_OUTBOUND_WORKER_ENABLED',
@@ -475,7 +474,7 @@ function toPublicAccount(account) {
   const {
     wallet,
     nome,
-    ticket_number,
+    numero_posizionale,
     tipo,
     sigla,
     status,
@@ -490,7 +489,7 @@ function toPublicAccount(account) {
   return {
     wallet,
     nome,
-    ticket_number,
+    numero_posizionale,
     tipo,
     sigla,
     status,

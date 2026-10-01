@@ -38,7 +38,7 @@ async function rogRequest(path, options = {}) {
   try {
     const response = await fetch(`${getBaseUrl()}${path}`, {
       method: options.method || 'GET',
-      headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}) },
+      headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.headers || {}) },
       body: options.body ? JSON.stringify(options.body) : undefined,
       signal: controller.signal
     });

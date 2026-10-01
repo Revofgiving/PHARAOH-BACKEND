@@ -9,6 +9,7 @@ function makeError(message, code, retryable = false, payload = null) { const err
 function normalizeWallet(value, label) { return giftSessions.normalizeWallet(value, label); }
 function normalizeGiftAmount(value) { return giftSessions.normalizeGiftAmount(value); }
 function expectedGiftUnits(amountUsdc) { return normalizeGiftAmount(amountUsdc) / 2; }
+function internalGiftHeaders() { const key = String(process.env.PHARAOH_GIFT_INTERNAL_KEY || '').trim(); if (!key) throw makeError('PHARAOH_GIFT_INTERNAL_KEY non configurata', 'GIFT_INTERNAL_AUTH_UNAVAILABLE'); return { 'X-Pharaoh-Gift-Key': key }; }
 
 async function giftRogRequest(path, options = {}) {
   try { return await rogApi._rogRequest(path, options); }
@@ -165,4 +166,50 @@ async function completeRogGift({ giftId, paymentWallet, beneficiaryWallet, rogAm
   return { success: true, completion, gift };
 }
 
-module.exports = { GIFT_ROG_MIN_AMOUNT_USDC, normalizeGiftAmount, expectedGiftUnits, createGiftIntent, confirmRogPayment, confirmRogRegistration, completeRogGift, readGift, readGiftIdentity, assertGiftShape, _assertCompletionPositions: assertCompletionPositions, _makeError: makeError, _giftRogRequest: giftRogRequest };
+
+async function createSmartboxIntent({ giftId, paymentWallet, rogAmountUsdc = 2, giftMessage = null }) {
+  const id = giftSessions.normalizeGiftId(giftId);
+  const payer = normalizeWallet(paymentWallet, 'paymentWallet');
+  const amount = normalizeGiftAmount(rogAmountUsdc);
+  const response = await giftRogRequest('/api/gift/create', { method: 'POST', timeoutMs: 10000, body: { giftId: id, donor: payer, amount, giftMessage: giftMessage || null } });
+  if (response?.success !== true) throw makeError(response?.message || 'ROG ha rifiutato la Carta Regalo', response?.code || 'GIFT_ROG_CREATE_FAILED', false, response);
+  const gift = response.gift;
+  if (!gift || giftSessions.normalizeGiftId(gift.giftId) !== id || normalizeWallet(gift.donorWallet, 'ROG donorWallet') !== payer || Number(gift.amountUSDC) !== amount) throw makeError('Read-back ROG Smartbox non coerente', 'GIFT_ROG_READBACK_MISMATCH');
+  if (gift.beneficiaryWallet) throw makeError('ROG ha associato prematuramente un beneficiario', 'GIFT_ROG_PREMATURE_BENEFICIARY');
+  return { success: true, payerPositions: Number(response.payerPositions || 0), gift };
+}
+async function confirmSmartboxRogPayment({ giftId, paymentWallet, rogAmountUsdc = 2, rogUsdcTxHash }) {
+  const id = giftSessions.normalizeGiftId(giftId); const payer = normalizeWallet(paymentWallet, 'paymentWallet'); const amount = normalizeGiftAmount(rogAmountUsdc); const tx = giftSessions.normalizeHash(rogUsdcTxHash, 'rogUsdcTxHash');
+  const transferProof = await rogDonation.verifyRogUsdcTransfer({ txHash: tx, wallet: payer, amountUsdc: amount });
+  const response = await giftRogRequest(`/api/gift/${encodeURIComponent(id)}/payment`, { method: 'POST', timeoutMs: 10000, body: { donor: payer, txHash: tx } });
+  if (response?.success !== true) throw makeError(response?.message || 'ROG non ha confermato il pagamento Carta Regalo', response?.code || 'GIFT_ROG_PAYMENT_FAILED', false, response);
+  return { success: true, transferProof, gift: response.gift };
+}
+async function confirmSmartboxRogRegistration({ giftId, paymentWallet, rogAmountUsdc = 2, rogUsdcTxHash, rogRegisterTxHash, rogDonationId }) {
+  const id = giftSessions.normalizeGiftId(giftId); const payer = normalizeWallet(paymentWallet, 'paymentWallet'); const amount = normalizeGiftAmount(rogAmountUsdc);
+  const paymentTx = giftSessions.normalizeHash(rogUsdcTxHash, 'rogUsdcTxHash'); const registerTx = giftSessions.normalizeHash(rogRegisterTxHash, 'rogRegisterTxHash'); const donationId = String(rogDonationId || '').trim();
+  if (!/^\d+$/.test(donationId) || BigInt(donationId) <= 0n) throw makeError('rogDonationId numerico obbligatorio', 'GIFT_ROG_DONATION_ID_INVALID');
+  const transferProof = await rogDonation.verifyRogUsdcTransfer({ txHash: paymentTx, wallet: payer, amountUsdc: amount });
+  const registrationProof = await rogDonation.verifyRogRegistration({ registerTxHash: registerTx, wallet: payer, amountUsdc: amount, donationId });
+  const response = await giftRogRequest(`/api/gift/${encodeURIComponent(id)}/register-payer`, { method: 'POST', timeoutMs: 10000, body: { donor: payer, donationId, registerTxHash: registerTx } });
+  if (response?.success !== true) throw makeError(response?.message || 'ROG non ha accettato registerDonation Carta Regalo', response?.code || 'GIFT_ROG_REGISTER_FAILED', false, response);
+  return { success: true, transferProof, registrationProof, gift: response.gift };
+}
+async function setSmartboxActivationWindow({ giftId, expiresAt }) {
+  const id = giftSessions.normalizeGiftId(giftId);
+  const expiry = new Date(expiresAt);
+  if (!Number.isFinite(expiry.getTime())) throw makeError('Scadenza Carta Regalo non valida', 'GIFT_EXPIRY_INVALID');
+  const response = await giftRogRequest(`/api/gift/${encodeURIComponent(id)}/activation-window`, { method: 'POST', timeoutMs: 10000, headers: internalGiftHeaders(), body: { expiresAt: expiry.toISOString() } });
+  if (response?.success !== true) throw makeError(response?.message || 'ROG non ha registrato la scadenza Carta Regalo', response?.code || 'GIFT_ROG_EXPIRY_SYNC_FAILED', true, response);
+  return response;
+}
+async function activateSmartboxRog({ giftId, beneficiaryWallet, activationMode = 'BENEFICIARY' }) {
+  const id = giftSessions.normalizeGiftId(giftId); const beneficiary = normalizeWallet(beneficiaryWallet, 'beneficiaryWallet');
+  const mode = String(activationMode || 'BENEFICIARY').toUpperCase();
+  if (!['BENEFICIARY','PURCHASER_FALLBACK'].includes(mode)) throw makeError('Modalita attivazione Carta Regalo non valida', 'GIFT_ACTIVATION_MODE_INVALID');
+  const response = await giftRogRequest(`/api/gift/${encodeURIComponent(id)}/activate`, { method: 'POST', timeoutMs: Number(process.env.ROG_COMPLETION_API_TIMEOUT_MS || 30000), headers: internalGiftHeaders(), body: { beneficiaryWallet: beneficiary, activationMode: mode } });
+  if (response?.success !== true || response?.completed !== true) throw makeError(response?.message || 'ROG non ha completato l attivazione Carta Regalo', response?.code || 'GIFT_ROG_COMPLETION_PENDING', response?.retryable === true, response);
+  assertCompletionPositions(response, beneficiary, 2);
+  return response;
+}
+module.exports = { GIFT_ROG_MIN_AMOUNT_USDC, normalizeGiftAmount, createSmartboxIntent, confirmSmartboxRogPayment, confirmSmartboxRogRegistration, setSmartboxActivationWindow, activateSmartboxRog, expectedGiftUnits, createGiftIntent, confirmRogPayment, confirmRogRegistration, completeRogGift, readGift, readGiftIdentity, assertGiftShape, _assertCompletionPositions: assertCompletionPositions, _makeError: makeError, _giftRogRequest: giftRogRequest };

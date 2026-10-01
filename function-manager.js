@@ -4,7 +4,7 @@
  * Gestisce il rilascio e posizionamento delle 4 Funzioni:
  * - 3 SIMBIONTI (1.500): non duplicabili (reg.7), velocizzano il percorso
  * - 1 PERPETUO (500): continuazione dell'account, duplicabile (reg.8)
- * - 1 GEMELLO (500): nuovo account, ticket prenotato (reg.9, reg.10)
+ * - 1 GEMELLO (500): nuovo account, numero posizionale prenotato (reg.9, reg.10)
  * - ALLOCAZIONE RHA 500: 300 ROG (150 dual HUMAN+PILETTA) + 200 URANUS (10 dual CASSA URANUS+HUMAN)
  *
  * Le Funzioni vengono rilasciate all'uscita dal livello 3 (Rha) (reg.3)
@@ -65,7 +65,7 @@ function buildPrenotazioneSpec(funzione, turnoOrigine, turnoDestinazione) {
     bloccoDestinazione: 1,
     tavolaRelativa: null,
     casella: null,
-    ticketNumber: funzione.ticket_prenotato ?? null
+    numeroPosizionale: funzione.numero_posizionale_prenotato ?? null
   };
 
   if (funzione.tipo === 'SIMBIONTE') {
@@ -94,9 +94,9 @@ function buildPrenotazioneSpec(funzione, turnoOrigine, turnoDestinazione) {
     if (!funzione.account_generato_wallet) {
       throw new Error(`Wallet Gemello mancante per funzione ${funzione.id}`);
     }
-    const ticket = Number(funzione.ticket_prenotato);
-    if (!Number.isInteger(ticket) || ticket < 1) {
-      throw new Error(`Ticket Gemello mancante o non valido per funzione ${funzione.id}`);
+    const numeroPosizionale = Number(funzione.numero_posizionale_prenotato);
+    if (!Number.isInteger(numeroPosizionale) || numeroPosizionale < 1) {
+      throw new Error(`Numero posizionale Gemello mancante o non valido per funzione ${funzione.id}`);
     }
     return { ...base, livelloDestinazione: 3, tavolaRelativa: 7, casella: 2 };
   }
@@ -150,7 +150,7 @@ async function assicuratiPrenotazione(funzione, turnoOrigine, turnoDestinazione,
     tavolaRelativa: spec.tavolaRelativa,
     tavolaNumero: null,
     casella: spec.casella,
-    ticketNumber: spec.ticketNumber
+    numeroPosizionale: spec.numeroPosizionale
   }, client);
 }
 
@@ -254,7 +254,7 @@ async function rilasciaFunzioniL3({ faraoneWallet, faraoneSigla, tipoAccount, tu
             const inserted = await dbClient.query(
               `INSERT INTO funzioni (
                 tipo, account_origine_wallet, account_generato_wallet,
-                account_origine_id, account_generato_id, sigla, ticket_prenotato,
+                account_origine_id, account_generato_id, sigla, numero_posizionale_prenotato,
                 importo, turno_rilascio, turno_entrata, tavola_posizionamento, posizione_in_tavola
               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
               RETURNING *`,
@@ -311,7 +311,7 @@ async function rilasciaFunzioniL3({ faraoneWallet, faraoneSigla, tipoAccount, tu
         accountOrigineId: sourceAccount.id,
         accountGeneratoId: perpetuoData.account.id,
         sigla: perpetuoData.sigla,
-        ticketPrenotato: null,
+        numeroPosizionalePrenotato: null,
         importo: rules.IMPORTI.DONO_PHARAOH,
         turnoRilascio: turnoCorrente,
         turnoEntrata,
@@ -342,7 +342,7 @@ async function rilasciaFunzioniL3({ faraoneWallet, faraoneSigla, tipoAccount, tu
         accountOrigineId: sourceAccount.id,
         accountGeneratoId: gemelloData.account.id,
         sigla: gemelloData.sigla,
-        ticketPrenotato: gemelloData.ticketPrenotato,
+        numeroPosizionalePrenotato: gemelloData.numeroPosizionalePrenotato,
         importo: rules.IMPORTI.DONO_PHARAOH,
         turnoRilascio: turnoCorrente,
         turnoEntrata,
@@ -354,7 +354,7 @@ async function rilasciaFunzioniL3({ faraoneWallet, faraoneSigla, tipoAccount, tu
     await assicuratiIdentita(funzione, client);
     await assicuratiPrenotazione(funzione, turnoCorrente, turnoEntrata, client);
     risultato.gemello = { funzione, account: gemelloData };
-    console.log(`   ✅ Gemello rilasciato: ${funzione.sigla} (ticket prenotato: ${funzione.ticket_prenotato}) (500)`);
+    console.log(`   ✅ Gemello rilasciato: ${funzione.sigla} (numero posizionale prenotato: ${funzione.numero_posizionale_prenotato}) (500)`);
   } else {
     console.log(`   ⛔ Gemello NON rilasciato (reg.11: Perpetuo non rilascia Gemello)`);
   }

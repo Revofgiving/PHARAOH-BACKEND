@@ -69,7 +69,7 @@
     },
     {
       "id": "0011_entry_function_reservation_guard",
-      "description": "Protegge ticket e caselle Entrata riservate alle Funzioni; rientri/ingressi ordinari non possono consumarle",
+      "description": "Protegge numero posizionale e caselle Entrata riservate alle Funzioni; rientri/ingressi ordinari non possono consumarle",
       "file": "database/0011_entry_function_reservation_guard.sql",
       "sha256": "cc3c1ecb3f189b177e17afb4f3254e1d63e84308cdb68cd6afe63d950fb73ab7"
     },
@@ -129,6 +129,30 @@
       "description": "DIRECT: ogni nuova posizione PHARAOH richiede una nuova HUMAN ROG; posizione ROG univoca e non riutilizzabile",
       "file": "database/0020_direct_rog_position_mandatory.sql",
       "sha256": "3e7765f4d5748125b892c6a37bf1335d2aef43f82cae3b31899edc2d4a0eab07"
+    },
+    {
+      "id": "0021_numero_posizionale_unico",
+      "description": "Numero posizionale unico: tavola/casella ENTRATA 1..infinito, Cassa sempre casella 1 da Tavola 2, prenotazioni Funzioni preservate senza concetto ticket",
+      "file": "database/0021_numero_posizionale_unico.sql",
+      "sha256": "e212c1feb8272abe85f99ac42561bc7b2700abcc37c9174161514eef69ed406d"
+    },
+    {
+      "id": "0022_cassa_posizione_completa",
+      "description": "Cassa PHARAOH come posizione ENTRATA completa: account autonomo, numero posizionale, sdoppiamento, progressione, Funzioni e doni; riconciliazione live delle Casse gia inserite",
+      "file": "database/0022_cassa_posizione_completa.sql",
+      "sha256": "b7dfda8ac258a97107678988f728011298aee5c2a508ca5c0d699734fbf3493d"
+    },
+    {
+      "id": "0023_direct_rog_wallet_eligibility_60m",
+      "description": "DIRECT: stato ricostruibile dal wallet, HUMAN ROG monouso, finestra 60 minuti da completamento HUMAN e doppia autorizzazione pre-pagamento",
+      "file": "database/0023_direct_rog_wallet_eligibility_60m.sql",
+      "sha256": "c7660ba81c8a1d5305f686e4f563aea797fb80666f491486af919dd67b561219"
+    },
+    {
+      "id": "0024_gift_smartbox_activation",
+      "description": "Carta Regalo Smartbox: 102 USDC prepagati, codice monouso, Community beneficiario entro 3 mesi e fallback automatico al regalante",
+      "file": "database/0024_gift_smartbox_activation.sql",
+      "sha256": "dc22a705924c5d0da3cc7736cbc741d214a18da7eefb5f54927a34167a9c489a"
     }
   ]
 }

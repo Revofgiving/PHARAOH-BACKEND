@@ -6,8 +6,8 @@
  * Ogni rientro THOT/ISIDE e una NUOVA radice autonoma del percorso ENTRATA:
  * - stesso wallet Ethereum reale del ricevente;
  * - account_id distinto;
- * - ticket ordinario distinto;
- * - sigla radice = ticket;
+ * - numero posizionale ordinario distinto;
+ * - sigla radice = numero posizionale;
  * - tavola personale/sdoppiamento legata a quella specifica radice.
  *
  * L'account secondario che ha generato il rientro resta soltanto come provenienza audit.
@@ -77,18 +77,6 @@ async function materializzaRientriEntrata({
       throw new Error(`${sourceName}: radice rientro ${index} incoerente`);
     }
 
-    root = await db.assignTicketToAccountId(root.id, client);
-    const sigla = String(root.ticket_number);
-    if (!sigla || sigla === 'null' || sigla === 'undefined') {
-      throw new Error(`${sourceName}: ticket non assegnato alla radice ${index}`);
-    }
-    if (root.sigla !== sigla || Number(root.root_account_id) !== Number(root.id)) {
-      root = await db.updateAccountIdentity(root.id, {
-        sigla,
-        rootAccountId: root.id
-      }, client);
-    }
-
     const turnoEntrata = await db.getTurnoCorrente('ENTRATA', 0, client);
     if (!turnoEntrata) throw new Error(`${sourceName}: nessun turno Entrata attivo`);
     const tavola = await tableManager.getTavolaPercorsoAttiva(0, turnoEntrata.numero_turno, client);
@@ -105,16 +93,23 @@ async function materializzaRientriEntrata({
       turno: turnoEntrata.numero_turno,
       sdoppiabile: true,
       accountId: root.id,
-      accountSigla: root.sigla,
+      accountSigla: root.sigla || null,
       client
     });
+    root = await db.setAccountNumeroPosizionale(root.id, placement.numeroPosizionaleGlobale, client, { setSiglaIfNull: true });
+    await db.syncEntryPlacementIdentity({
+      posizioneId: placement.posizione.id,
+      tavolaSdoppiamentoId: placement.tavolaSdoppiamento?.id || null,
+      accountId: root.id,
+      accountSigla: root.sigla
+    }, client);
     await db.incrementSacerdotiEntrati(turnoEntrata.id, client);
 
     const proof = {
       index,
       wallet: w,
       accountId: Number(root.id),
-      ticketNumber: Number(root.ticket_number),
+      numeroPosizionale: Number(root.numero_posizionale),
       sigla: root.sigla,
       sourceAccountId: Number(sourceAccount.id),
       sourceAccountSigla: sourceAccount.sigla || null,
@@ -172,8 +167,8 @@ async function materializzaRientriEntrata({
   if (new Set(positions.map(p => p.accountId)).size !== expected) {
     throw new Error(`${sourceName}: i rientri non hanno account autonomi distinti`);
   }
-  if (new Set(positions.map(p => p.ticketNumber)).size !== expected) {
-    throw new Error(`${sourceName}: i rientri non hanno ticket distinti`);
+  if (new Set(positions.map(p => p.numeroPosizionale)).size !== expected) {
+    throw new Error(`${sourceName}: i rientri non hanno numero posizionale distinti`);
   }
   if (positions.some(p => p.wallet !== w || p.accountId === Number(sourceAccount.id))) {
     throw new Error(`${sourceName}: attribuzione wallet/account rientri non valida`);

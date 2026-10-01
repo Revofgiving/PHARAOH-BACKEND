@@ -18,11 +18,11 @@ const rules = require('./rules-engine');
 /**
  * Inserisce un account in un contenitore operativo.
  */
-async function inserisciInContenitore({ tipo, wallet, ticketNumber, nome, importo, provenienza }, client = null) {
+async function inserisciInContenitore({ tipo, wallet, numeroPosizionale, nome, importo, provenienza }, client = null) {
   return await db.addToContenitore({
     tipo,
     wallet,
-    ticketNumber,
+    numeroPosizionale,
     nome,
     importo,
     provenienza
@@ -40,7 +40,7 @@ async function prelevaProssimo(tipo, client = null) {
 
   await db.markContenitoreUsato(item.id, client);
 
-  console.log(`   📤 Prelevato da contenitore ${tipo}: ticket ${item.ticket_number} (${item.wallet.substring(0, 10)}...)`);
+  console.log(`   📤 Prelevato da contenitore ${tipo}: numero posizionale ${item.numero_posizionale} (${item.wallet.substring(0, 10)}...)`);
   return item;
 }
 
@@ -63,13 +63,13 @@ async function conta(tipo, client = null) {
  * da 100 USDC viene riportata alla tavola successiva dal motore Entrata e
  * non viene sottratta qui come accantonamento.
  */
-async function trasferisciAContenitore52(wallet, ticketNumber, nome) {
-  console.log(`   📦 Trasferimento a contenitore 5.2: ${nome} (ticket ${ticketNumber})`);
+async function trasferisciAContenitore52(wallet, numeroPosizionale, nome) {
+  console.log(`   📦 Trasferimento a contenitore 5.2: ${nome} (numero posizionale ${numeroPosizionale})`);
 
   return await inserisciInContenitore({
     tipo: '5.2',
     wallet,
-    ticketNumber,
+    numeroPosizionale,
     nome,
     importo: rules.IMPORTI.USCITA_ENTRATA_NETTO,
     provenienza: 'USCITA_ENTRATA'

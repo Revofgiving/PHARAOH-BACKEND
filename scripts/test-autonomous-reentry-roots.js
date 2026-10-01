@@ -17,7 +17,7 @@ async function runCase({ source, count, sourceId, sourceSigla, tipo }) {
   const placements = [];
   const postCommit = [];
   let nextId = 10000;
-  let nextTicket = source === 'THOT_REENTRY' ? 501 : 1001;
+  let nextNumeroPosizionale = source === 'THOT_REENTRY' ? 501 : 1001;
   let activeTurn = 1;
   let occupied = 0;
   let entryStarts = 0;
@@ -61,19 +61,22 @@ async function runCase({ source, count, sourceId, sourceSigla, tipo }) {
         source_account_id: input.sourceAccountId,
         source_event_key: input.sourceEventKey,
         origin_kind: input.originKind,
-        ticket_number: null
+        numero_posizionale: null
       };
       rootsByKey.set(input.accountKey, row);
       rootsById.set(row.id, row);
       createdInputs.push({ ...input, id: row.id });
       return { ...row };
     },
-    async assignTicketToAccountId(id) {
+    async setAccountNumeroPosizionale(id, numero, _client, options = {}) {
       const row = rootsById.get(Number(id));
       assert.ok(row, `Radice ${id} deve esistere`);
-      if (!row.ticket_number) row.ticket_number = nextTicket++;
+      row.numero_posizionale = Number(numero);
+      if (options.setSiglaIfNull && !row.sigla) row.sigla = String(numero);
+      row.root_account_id = row.id;
       return { ...row };
     },
+    async syncEntryPlacementIdentity() { return { ok: true }; },
     async updateAccountIdentity(id, updates) {
       const row = rootsById.get(Number(id));
       row.sigla = updates.sigla;
@@ -140,12 +143,15 @@ async function runCase({ source, count, sourceId, sourceSigla, tipo }) {
       assert.equal(input.donoImporto, 100);
       assert.equal(input.sdoppiabile, true);
       assert.ok(Number.isInteger(Number(input.accountId)) && Number(input.accountId) !== sourceId);
-      assert.match(String(input.accountSigla), /^\d+$/);
+      assert.equal(input.accountSigla, null, 'La sigla numerica nasce dalla posizione fisica, non prima');
 
       occupied += 1;
       const complete = occupied === 6;
+      const numeroPosizionaleGlobale = ((600 + activeTurn - 1) * 6) + occupied;
       const result = {
         casellaOccupata: occupied,
+        numeroPosizionaleGlobale,
+        posizione: { id: 70000 + placements.length + 1, numero_posizionale: numeroPosizionaleGlobale },
         tavolaCompleta: complete,
         tavolaSdoppiamento: {
           id: 50000 + placements.length + 1,
@@ -211,14 +217,14 @@ async function runCase({ source, count, sourceId, sourceSigla, tipo }) {
     assert.equal(createdInputs.length, count);
     assert.equal(placements.length, count);
     assert.equal(new Set(result.map(x => x.accountId)).size, count, 'Ogni rientro deve avere account_id autonomo');
-    assert.equal(new Set(result.map(x => x.ticketNumber)).size, count, 'Ogni rientro deve avere ticket autonomo');
+    assert.equal(new Set(result.map(x => x.numeroPosizionale)).size, count, 'Ogni rientro deve avere numero posizionale autonomo');
     assert.equal(new Set(result.map(x => x.sigla)).size, count, 'Ogni rientro deve avere sigla radice autonoma');
     assert.equal(new Set(result.map(x => x.personalTableId)).size, count, 'Ogni rientro deve avere tavola personale autonoma');
     assert.ok(result.every(x => x.wallet === wallet), 'Tutti i rientri devono restare sul wallet MetaMask originale');
     assert.ok(result.every(x => x.accountId !== sourceId), 'La radice rientro non deve riusare account_id del Secondario sorgente');
     assert.ok(result.every(x => x.sourceAccountId === sourceId && x.sourceAccountSigla === sourceSigla));
-    assert.ok(result.every(x => String(x.ticketNumber) === x.sigla), 'Sigla radice deve essere il ticket Entrata');
-    assert.ok(placements.every((p, i) => p.accountId === result[i].accountId && p.accountSigla === result[i].sigla));
+    assert.ok(result.every(x => String(x.numeroPosizionale) === x.sigla), 'Sigla radice deve essere il numero posizionale Entrata');
+    assert.ok(placements.every((p, i) => p.accountId === result[i].accountId && p.accountSigla === null));
     assert.ok(createdInputs.every(x => x.wallet === wallet && x.tipo === 'PRIMARIO' && x.parentAccountId === null));
     assert.ok(createdInputs.every(x => x.sourceAccountId === sourceId && x.sourceEventKey === eventKey && x.originKind === source));
 
@@ -264,7 +270,7 @@ async function runCase({ source, count, sourceId, sourceSigla, tipo }) {
   assert.ok(flow.includes('await posizionaSacerdoteInPharaoh(wallet, nomeErede, client, eredeIdentity);'));
   assert.ok(flow.includes('if (prossimaTavolaFaraone.faraone_account_id)'));
 
-  console.log('PASS AUTONOMOUS REENTRY: THOT 5/5 e ISIDE 50/50 = nuove radici Entrata autonome, ticket/sigla/account_id distinti, stesso wallet MetaMask');
+  console.log('PASS AUTONOMOUS REENTRY: THOT 5/5 e ISIDE 50/50 = nuove radici Entrata autonome, numero posizionale/sigla/account_id distinti, stesso wallet MetaMask');
   console.log('PASS AUTONOMOUS REENTRY: ogni radice crea la propria tavola personale; con riporto Cassa dalla Tavola 2, ISIDE attraversa 9 chiusure e continua nella decima tavola');
 })().catch(error => {
   console.error(error);

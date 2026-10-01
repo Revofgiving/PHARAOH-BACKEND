@@ -1,7 +1,7 @@
 /**
  * 👤 PHARAOH - Account Manager
  *
- * Gestisce registrazione account, rilascio ticket sequenziale,
+ * Gestisce registrazione account, rilascio numero posizionale sequenziale,
  * e classificazione in PRIMARIO / PERPETUO / GEMELLO / SIMBIONTE.
  *
  * Il primo accesso umano passa dal flusso di donazione verificata da 100 USDC.
@@ -28,7 +28,7 @@ const QUOTA_INGRESSO = 100;
  * @param {Object} params
  * @param {string} params.wallet - Indirizzo wallet
  * @param {string} params.nome - Nome dell'utente
- * @returns {Object} { account, ticket, contenitore }
+ * @returns {Object} { account, numero posizionale, contenitore }
  */
 async function registraAccount({ wallet, nome }) {
   if (!wallet || !/^0x[a-fA-F0-9]{40}$/.test(wallet)) {
@@ -44,7 +44,7 @@ async function registraAccount({ wallet, nome }) {
       recognized: true,
       isNew: false,
       account: existing,
-      ticketNumber: null,
+      numeroPosizionale: null,
       contenitore: null,
       positionCreated: false,
       message: `Wallet già riconosciuto: ${w}`
@@ -58,7 +58,7 @@ async function registraAccount({ wallet, nome }) {
     recognized: true,
     isNew: true,
     account,
-    ticketNumber: null,
+    numeroPosizionale: null,
     contenitore: null,
     positionCreated: false,
     message: `Wallet riconosciuto per la prima volta: ${w}`
@@ -122,7 +122,7 @@ async function creaPerpetuo(parentWallet, parentSigla, perpetuoNumero, client = 
     : await db.getAccountByIdentity({ wallet: walletReale, sigla: parentSigla || null }, client);
   if (!parent) throw new Error(`Account origine Perpetuo non trovato: ${walletReale}`);
 
-  const siglaBase = parentSigla || parent.sigla || (parent.ticket_number ? String(parent.ticket_number) : null);
+  const siglaBase = parentSigla || parent.sigla || (parent.numero_posizionale ? String(parent.numero_posizionale) : null);
   const sigla = calcolaSiglaPerpetuo(siglaBase, perpetuoNumero);
   const rootId = parent.root_account_id || parent.id;
 
@@ -148,7 +148,7 @@ async function creaPerpetuo(parentWallet, parentSigla, perpetuoNumero, client = 
  *
  * Sigla: 1-A, 2-A, ecc. (reg.9)
  * Il Gemello è trattato come account nuovo a tutti gli effetti.
- * Ticket prenotato: partendo da 26, +14 per ogni successivo (reg.10)
+ * Numero posizionale prenotato: partendo da 26, +14 per ogni successivo (reg.10)
  *
  * @param {string} parentWallet - Wallet del Faraone che rilascia
  * @param {string} parentSigla - Sigla del parent
@@ -161,7 +161,7 @@ async function creaGemello(parentWallet, parentSigla, gemelloNumero, client = nu
     : await db.getAccountByIdentity({ wallet: walletReale, sigla: parentSigla || null }, client);
   if (!parent) throw new Error(`Account origine Gemello non trovato: ${walletReale}`);
 
-  const siglaBase = parentSigla || parent.sigla || (parent.ticket_number ? String(parent.ticket_number) : null);
+  const siglaBase = parentSigla || parent.sigla || (parent.numero_posizionale ? String(parent.numero_posizionale) : null);
   const sigla = calcolaSiglaGemello(siglaBase, gemelloNumero);
   const rootId = parent.root_account_id || parent.id;
   console.log(`   👥 Creazione GEMELLO: ${sigla} (wallet condiviso ${walletReale.substring(0, 10)}...)`);
@@ -177,10 +177,10 @@ async function creaGemello(parentWallet, parentSigla, gemelloNumero, client = nu
     rootAccountId: rootId,
     originKind: 'FUNCTION'
   }, client);
-  const accountConTicket = await db.assignNextGemelloTicketToAccountId(account.id, client);
-  const ticketPrenotato = accountConTicket.ticket_number;
+  const accountConNumeroPosizionale = await db.assignNextGemelloNumeroPosizionaleToAccountId(account.id, client);
+  const numeroPosizionalePrenotato = accountConNumeroPosizionale.numero_posizionale;
 
-  return { account: accountConTicket, sigla, wallet: walletReale, ticketPrenotato };
+  return { account: accountConNumeroPosizionale, sigla, wallet: walletReale, numeroPosizionalePrenotato };
 }
 
 /**
@@ -321,12 +321,12 @@ async function getPercorsoAccount(wallet, account) {
     });
   }
 
-  // 3. Un ticket/sigla esistente identifica un percorso che deve ancora
+  // 3. Un numero posizionale/sigla esistente identifica un percorso che deve ancora
   // materializzare una posizione successiva.
-  if (account?.ticket_number || account?.sigla) {
+  if (account?.numero_posizionale || account?.sigla) {
     return livelloToPercorso(0, {
       status: account.status || 'REGISTRATO',
-      source: 'ticket'
+      source: 'numero_posizionale'
     });
   }
 
@@ -340,7 +340,7 @@ async function getPercorsoAccount(wallet, account) {
 }
 
 function percorsoPubblico(account, percorso) {
-  const numeroPosizionale = account.ticket_number == null ? null : Number(account.ticket_number);
+  const numeroPosizionale = account.numero_posizionale == null ? null : Number(account.numero_posizionale);
   const sigla = account.sigla || (numeroPosizionale == null ? null : String(numeroPosizionale));
   return {
     // ID tecnico interno del percorso: NON e un wallet e NON identifica una persona diversa.
@@ -429,10 +429,10 @@ async function getPercorsiWalletSnapshot(accounts) {
       }));
     }
 
-    if (account.ticket_number || account.sigla) {
+    if (account.numero_posizionale || account.sigla) {
       return percorsoPubblico(account, livelloToPercorso(0, {
         status: account.status || 'REGISTRATO',
-        source: 'ticket'
+        source: 'numero_posizionale'
       }));
     }
 

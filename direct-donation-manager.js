@@ -2,6 +2,7 @@
 
 const pg = require('./pg-connection-manager');
 const community = require('./rog-community-manager');
+const eligibility = require('./direct-rog-eligibility-manager');
 const rogDonation = require('./rog-donation-manager');
 const sessions = require('./direct-donation-session-manager');
 
@@ -87,14 +88,6 @@ async function _confirmRogPaymentLocked({ wallet, sessionRef, rogUsdcTxHash }, c
     amountUsdc: expectedAmount
   });
 
-  // Anti-replay temporale: una nuova sessione PHARAOH non puo usare una
-  // vecchia tx ROG mai associata in precedenza. Tolleranza 120s per clock skew.
-  const sessionCreatedAt = new Date(row.created_at).getTime();
-  const paymentBlockMs = Number(usdcProof.blockTimestamp || 0) * 1000;
-  if (Number.isFinite(sessionCreatedAt) && paymentBlockMs > 0 && paymentBlockMs < sessionCreatedAt - 120000) {
-    throw makeError('La transazione ROG precede la nuova sessione PHARAOH e non puo essere riutilizzata', 'DIRECT_ROG_TX_PREDATES_SESSION');
-  }
-
   const updated = await sessionManager.recordRogPaymentConfirmed({
     sessionRef,
     wallet: w,
@@ -164,12 +157,6 @@ async function _recordRogRegistrationLocked({ wallet, sessionRef, rogRegisterTxH
     amountUsdc: expectedAmount,
     donationId: canonicalDonationId
   });
-
-  const sessionCreatedAt = new Date(row.created_at).getTime();
-  const registerBlockMs = Number(registrationProof.blockTimestamp || 0) * 1000;
-  if (Number.isFinite(sessionCreatedAt) && registerBlockMs > 0 && registerBlockMs < sessionCreatedAt - 120000) {
-    throw makeError('La registerDonation ROG precede la nuova sessione PHARAOH e non puo essere riutilizzata', 'DIRECT_ROG_REGISTER_PREDATES_SESSION');
-  }
 
   const updated = await sessionManager.recordRogRegistration({
     sessionRef,
@@ -301,12 +288,6 @@ async function verifyRogPositionForSession({ wallet, sessionRef, rogPosition }, 
     : null;
   if (!found) throw makeError('La nuova posizione ROG non risulta intestata al wallet della sessione', 'ROG_POSITION_NOT_FOUND', true);
 
-  const createdAtMs = found.created_at ? new Date(found.created_at).getTime() : NaN;
-  const sessionCreatedAtMs = new Date(row.created_at).getTime();
-  if (Number.isFinite(createdAtMs) && Number.isFinite(sessionCreatedAtMs) && createdAtMs < sessionCreatedAtMs - 120000) {
-    throw makeError('La posizione ROG e precedente alla nuova sessione PHARAOH e non e valida per questa operazione', 'DIRECT_ROG_POSITION_PREDATES_SESSION');
-  }
-
   return {
     success: true,
     verified: true,
@@ -398,6 +379,12 @@ async function processRogFulfillmentPending(limit = 5, dependencies = {}) {
 }
 
 async function assertReadyForPharaoh({ wallet, sessionRef }, dependencies = {}) {
+  const eligibilityManager = dependencies.eligibility || eligibility;
+  const isInjectedTestPath = !dependencies.eligibility && (dependencies.sessions || dependencies.community || dependencies.rogApi);
+  if (!isInjectedTestPath) {
+    const claimed = await eligibilityManager.assertClaimReady(wallet, sessionRef);
+    if (claimed) return claimed;
+  }
   const communityManager = dependencies.community || community;
   const sessionManager = dependencies.sessions || sessions;
   const w = sessionManager.normalizeWallet(wallet);

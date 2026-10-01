@@ -14,7 +14,7 @@
  *  7. Simbionti NON duplicabili
  *  8. Identificazione e numerazione Perpetuo (A.1, A.2 ...)
  *  9. Identificazione e numerazione Gemello (1-A, 2-A ...)
- * 10. Prenotazione ticket Gemelli (da 26, +14)
+ * 10. Prenotazione numero posizionale Gemelli (da 26, +14)
  * 11. Perpetuo non rilascia Gemello, solo Perpetuo successivo
  * 12. Solo Account Secondari passano da L3 a L4
  * 13. Uscita L4: 10.000 per L5 + 500 progetti umanitari + 500 per 5 rientri Entrata
@@ -75,29 +75,34 @@ const IMPORTI = {
   USCITA_L5_PAYOUT_TOTALE: 25000,
   USCITA_L5_NETTO: 25000,
 
-  // Sacerdoti necessari per completare il Blocco 1:
-  //   1° turno (A):
-  //     18 sacerdoti UMANI × 6 donatori = 108 donatori
-  //     + 6 per la tavola di A (A è il Faraone ricevente, non un sacerdote)
-  //     = 114 DONATORI TOTALI per far uscire A da Rha
+  // Struttura Blocco 1 e prenotazioni Funzioni.
   //
-  //   Dal 2° turno: 13 sacerdoti × 6 donatori = 78 donatori
-  //   (il Faraone del turno 2+ è già in posizione via sdoppiamento, non conta)
+  //   Il Faraone che completa RHA genera 5 Funzioni per il turno successivo:
+  //     3 Simbionti + 1 Perpetuo + 1 Gemello.
+  //   Queste 5 posizioni sono conosciute e PRENOTATE A PRIORI: gli HUMAN
+  //   ordinari non possono occuparle. Per questo, dal 2° turno, i sacerdoti
+  //   da formare scendono da 18 a 13 (18 - 5 = 13).
   //
-  //   Perché 13 e non 18?
-  //   Le FUNZIONI rilasciate dal Faraone precedente coprono 5 slot:
-  //     3 Simbionti (non duplicabili) → -3 sacerdoti umani
-  //     1 Perpetuo → -1 sacerdote umano
-  //     1 Gemello  → -1 sacerdote umano
-  //     Totale riduzione: -5  → 18 - 5 = 13
+  //   Storicamente, senza la posizione CASSA in casella 1, 13 tavole Entrata
+  //   avrebbero richiesto 13 × 6 = 78 HUMAN.
   //
-  //   Le Funzioni donano comunque 500€ ciascuna al Faraone (usando i 3.000€
-  //   trattenuti dal Faraone precedente), quindi il totale rimane sempre 9.000€:
-  //     13 sacerdoti umani × 500 = 6.500
-  //     5 Funzioni         × 500 = 2.500
-  //     Totale                   = 9.000 €
+  //   Regola corrente: dalla Tavola Entrata 2 in poi, casella 1 e sempre una
+  //   vera posizione CASSA PHARAOH. Restano quindi 5 HUMAN per ciascuna tavola.
+  //   Le 13 tavole necessarie al turno successivo richiedono percio:
+  //     13 × 5 = 65 HUMAN.
+  //
+  //   Ordine di precedenza strutturale:
+  //     1) CASSA PHARAOH in casella 1 delle tavole Entrata T2+
+  //     2) Funzioni gia prenotate nelle posizioni Pharaoh del turno
+  //     3) HUMAN ordinari
+  //
+  //   Le Funzioni vengono create esclusivamente all'uscita da RHA (L3) e
+  //   materializzate nel turno successivo secondo le prenotazioni fisse.
   SACERDOTI_PRIMO_TURNO: 18,
-  SACERDOTI_DAL_SECONDO: 13
+  FUNZIONI_PRENOTATE_DAL_SECONDO: 5,
+  SACERDOTI_DAL_SECONDO: 13,
+  HUMAN_PER_TAVOLA_ENTRATA_DAL_SECONDO: 5,
+  HUMAN_PRIMO_DONO_FARAONE_DAL_SECONDO: 65
 };
 
 // ========================================
@@ -184,18 +189,18 @@ function regolaSimbionteDuplicabile(tipo) {
 }
 
 // ========================================
-// REGOLA 10: Prenotazione ticket Gemelli
+// REGOLA 10: Prenotazione numero posizionale Gemelli
 // ========================================
 
 /**
- * Reg.10: Il sistema prenota il ticket per tutti i Gemelli futuri,
+ * Reg.10: Il sistema prenota il numero posizionale per tutti i Gemelli futuri,
  * partendo dal nr. 26 e continuando con multipli di 14.
  * Es: 26, 40, 54, 68, 82, 96, ...
  *
  * @param {number} gemelloOrdine - Ordine del gemello (1=primo, 2=secondo, ...)
- * @returns {number} Ticket prenotato
+ * @returns {number} Numero posizionale prenotato
  */
-function regolaTicketGemello(gemelloOrdine) {
+function regolaNumeroPosizionaleGemello(gemelloOrdine) {
   return 26 + (gemelloOrdine - 1) * 14;
 }
 
@@ -443,12 +448,27 @@ function regolaPosizionamentoFunzioni(turno) {
 // ========================================
 
 /**
- * Calcola quanti sacerdoti servono per il turno.
- * Primo turno: 18 (6 x 3 tavole Horus/Rha piene)
- * Dal secondo: 13 (grazie ai 3 Simbionti + Perpetuo + Gemello = -5)
+ * Calcola quanti sacerdoti devono essere formati nel turno.
+ * Primo turno: 18.
+ * Dal secondo: 13, perche 5 posizioni sono gia prenotate alle Funzioni
+ * generate dal Faraone precedente a RHA.
  */
 function calcolaSacerdotiNecessari(turno) {
   return turno === 1 ? IMPORTI.SACERDOTI_PRIMO_TURNO : IMPORTI.SACERDOTI_DAL_SECONDO;
+}
+
+/**
+ * HUMAN necessari dal secondo turno per formare i 13 sacerdoti residui.
+ * Ogni tavola Entrata T2+ ha 6 posizioni totali ma la casella 1 e CASSA,
+ * quindi richiede 5 HUMAN: 13 × 5 = 65.
+ */
+function calcolaHumanPrimoDonoFaraoneDalSecondo() {
+  const sacerdotiResidui = IMPORTI.SACERDOTI_PRIMO_TURNO - IMPORTI.FUNZIONI_PRENOTATE_DAL_SECONDO;
+  const human = sacerdotiResidui * IMPORTI.HUMAN_PER_TAVOLA_ENTRATA_DAL_SECONDO;
+  if (sacerdotiResidui !== IMPORTI.SACERDOTI_DAL_SECONDO || human !== IMPORTI.HUMAN_PRIMO_DONO_FARAONE_DAL_SECONDO) {
+    throw new Error('Invariante 114->78->65 non coerente con prenotazioni Funzioni/Cassa PHARAOH');
+  }
+  return human;
 }
 
 // ========================================
@@ -461,7 +481,7 @@ module.exports = {
   regolaEntrateFaraoneTurno,
   regolaNumerazioneTavole,
   regolaSimbionteDuplicabile,
-  regolaTicketGemello,
+  regolaNumeroPosizionaleGemello,
   regolaRilasciFunzioni,
   regolaPuoPassareAlL4,
   classificaAccountRha,
@@ -469,6 +489,7 @@ module.exports = {
   calcolaUscitaLivello,
   regolaPosizionamentoFunzioni,
   calcolaSacerdotiNecessari,
+  calcolaHumanPrimoDonoFaraoneDalSecondo,
 
   // Costanti
   IMPORTI

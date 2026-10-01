@@ -117,7 +117,7 @@ async function testOrchestration(tipoAccount) {
         index: i + 1,
         wallet,
         accountId: 8000 + i,
-        ticketNumber: 9000 + i,
+        numeroPosizionale: 9000 + i,
         sigla: String(9000 + i),
         sourceAccountId: accountId,
         sourceAccountSigla: sigla,

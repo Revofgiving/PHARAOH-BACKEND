@@ -7,7 +7,7 @@ const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..');
 const wallet = '0x1234567890abcdef1234567890abcdef12345678';
 let nextId = 100;
-let nextGemelloTicket = 26;
+let nextGemelloNumeroPosizionale = 26;
 const byId = new Map();
 const created = [];
 
@@ -17,7 +17,7 @@ const primary = {
   nome: 'PRIMARY 23',
   tipo: 'PRIMARIO',
   sigla: '23',
-  ticket_number: 23,
+  numero_posizionale: 23,
   root_account_id: 23
 };
 byId.set(primary.id, primary);
@@ -34,7 +34,7 @@ const dbStub = {
       nome: input.nome,
       tipo: input.tipo,
       sigla: input.sigla,
-      ticket_number: null,
+      numero_posizionale: null,
       parent_account_id: input.parentAccountId,
       root_account_id: input.rootAccountId,
       account_key: input.accountKey
@@ -43,11 +43,11 @@ const dbStub = {
     created.push({ ...input, id: row.id });
     return { ...row };
   },
-  async assignNextGemelloTicketToAccountId(id) {
+  async assignNextGemelloNumeroPosizionaleToAccountId(id) {
     const row = byId.get(Number(id));
-    if (!row.ticket_number) {
-      row.ticket_number = nextGemelloTicket;
-      nextGemelloTicket += 14;
+    if (!row.numero_posizionale) {
+      row.numero_posizionale = nextGemelloNumeroPosizionale;
+      nextGemelloNumeroPosizionale += 14;
     }
     return { ...row };
   }
@@ -82,7 +82,7 @@ delete require.cache[accountPath];
     const g1 = await accounts.creaGemello(wallet, '23', 1, null, primary.id);
     assert.equal(g1.wallet, wallet);
     assert.equal(g1.sigla, '1-23');
-    assert.equal(g1.ticketPrenotato, 26);
+    assert.equal(g1.numeroPosizionalePrenotato, 26);
     byId.set(g1.account.id, { ...g1.account, root_account_id: 23 });
 
     const p2 = await accounts.creaPerpetuo(wallet, '23.1', 2, null, p1.account.id);
@@ -96,7 +96,7 @@ delete require.cache[accountPath];
     const g2 = await accounts.creaGemello(wallet, '1-23', 2, null, g1.account.id);
     assert.equal(g2.wallet, wallet);
     assert.equal(g2.sigla, '2-23');
-    assert.equal(g2.ticketPrenotato, 40);
+    assert.equal(g2.numeroPosizionalePrenotato, 40);
 
     assert.ok(created.every(x => x.wallet === wallet), 'Nessun Secondario deve usare un wallet diverso dal Primario');
     assert.ok(created.every(x => !/_P\d+$/i.test(x.wallet) && !/_G\d+$/i.test(x.wallet)), 'Pseudo-wallet vietati');

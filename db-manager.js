@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   id            BIGSERIAL PRIMARY KEY,
   wallet        TEXT NOT NULL UNIQUE,
   nome          TEXT,
-  ticket_number BIGINT UNIQUE,                      -- NULL finché non rilasciato
+  numero_posizionale BIGINT UNIQUE,                      -- NULL finché non rilasciato
   tipo          TEXT NOT NULL DEFAULT 'PRIMARIO'
     CHECK (tipo IN ('PRIMARIO','PERPETUO','GEMELLO','SIMBIONTE','FONDO')),
   sigla         TEXT,                                -- es. A.1, 1-A, 2-A ...
@@ -122,8 +122,9 @@ CREATE TABLE IF NOT EXISTS posizioni (
   wallet        TEXT NOT NULL,
   nome          TEXT,
   tipo          TEXT NOT NULL
-    CHECK (tipo IN ('DONATORE','EREDE','FARAONE','SIMBIONTE','PERPETUO','GEMELLO','PROGREDITO','ROLLOVER')),
+    CHECK (tipo IN ('DONATORE','EREDE','FARAONE','SIMBIONTE','PERPETUO','GEMELLO','PROGREDITO','CASSA')),
   dono_importo  NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (dono_importo >= 0),
+  numero_posizionale BIGINT,                         -- unico numero valido del movimento ENTRATA
   sdoppiamento_tavola_id BIGINT REFERENCES tavole(id),
   status        TEXT NOT NULL DEFAULT 'ATTIVO' CHECK (status IN ('ATTIVO','COMPLETATO')),
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -158,7 +159,7 @@ CREATE TABLE IF NOT EXISTS funzioni (
   account_origine_wallet  TEXT NOT NULL,                -- Faraone che ha rilasciato
   account_generato_wallet TEXT,                         -- wallet del Perpetuo/Gemello generato
   sigla                   TEXT,                         -- A.1, 1-A, ecc.
-  ticket_prenotato        BIGINT,
+  numero_posizionale_prenotato        BIGINT,
   importo                 NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (importo >= 0),
   turno_rilascio          BIGINT NOT NULL CHECK (turno_rilascio >= 1),
   turno_entrata           BIGINT,
@@ -184,7 +185,7 @@ CREATE TABLE IF NOT EXISTS prenotazioni_funzioni (
   tavola_relativa BIGINT NOT NULL CHECK (tavola_relativa >= 1),
   tavola_numero BIGINT,
   casella INTEGER NOT NULL CHECK (casella BETWEEN 1 AND 6),
-  ticket_number BIGINT,
+  numero_posizionale BIGINT,
   stato TEXT NOT NULL DEFAULT 'RESERVED'
     CHECK (stato IN ('RESERVED','MATERIALIZED','CONSUMED','CANCELLED','ERROR')),
   posizione_id BIGINT REFERENCES posizioni(id),
@@ -218,7 +219,7 @@ CREATE TABLE IF NOT EXISTS contenitori (
   tipo              TEXT NOT NULL CONSTRAINT chk_contenitori_tipo
     CHECK (tipo IN ('5','5.2')),
   wallet            TEXT NOT NULL,
-  ticket_number     BIGINT,
+  numero_posizionale     BIGINT,
   nome              TEXT,
   importo_disponibile NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (importo_disponibile >= 0),
   provenienza       TEXT,                               -- ISCRIZIONE | USCITA_ENTRATA
@@ -492,7 +493,7 @@ CREATE INDEX IF NOT EXISTS idx_api_audit_log_path_status
 
 -- Indici
 CREATE INDEX IF NOT EXISTS idx_accounts_wallet ON accounts(wallet);
-CREATE INDEX IF NOT EXISTS idx_accounts_ticket ON accounts(ticket_number);
+CREATE INDEX IF NOT EXISTS idx_accounts_numero_posizionale ON accounts(numero_posizionale);
 CREATE INDEX IF NOT EXISTS idx_tavole_numero ON tavole(numero);
 CREATE INDEX IF NOT EXISTS idx_tavole_status ON tavole(status);
 CREATE INDEX IF NOT EXISTS idx_tavole_livello_turno ON tavole(livello, turno);
@@ -557,10 +558,10 @@ CREATE INDEX IF NOT EXISTS idx_eventi_data ON eventi(data_evento DESC);
 CREATE INDEX IF NOT EXISTS idx_eventi_stato ON eventi(stato);
 CREATE INDEX IF NOT EXISTS idx_admin_notes_wallet ON admin_notes(wallet);
 
--- Guard ticket/caselle riservate alle Funzioni e audit riporto Entrata da 100 USDC.
-CREATE INDEX IF NOT EXISTS idx_prenotazioni_funzioni_ticket_stato
-  ON prenotazioni_funzioni(ticket_number, stato)
-  WHERE ticket_number IS NOT NULL;
+-- Guard numero posizionale/caselle riservate alle Funzioni e audit riporto Entrata da 100 USDC.
+CREATE INDEX IF NOT EXISTS idx_prenotazioni_funzioni_numero_posizionale_stato
+  ON prenotazioni_funzioni(numero_posizionale, stato)
+  WHERE numero_posizionale IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_prenotazioni_funzioni_entry_slot
   ON prenotazioni_funzioni(turno_destinazione, livello_destinazione, tavola_numero, tavola_relativa, casella, stato);
 
@@ -604,10 +605,10 @@ async function initDatabase() {
 }
 
 /**
- * Assegna il prossimo ticket Gemello disponibile (26, 40, 54...).
+ * Assegna il prossimo numero posizionale Gemello disponibile (26, 40, 54...).
  * Operazione transazionale e protetta da lock.
  */
-async function assignNextGemelloTicket(wallet, client = null) {
+async function assignNextGemelloNumeroPosizionale(wallet, client = null) {
   if (!client) {
     await initDatabase();
   }
@@ -618,36 +619,36 @@ async function assignNextGemelloTicket(wallet, client = null) {
     if (shouldManageTx) {
       await dbClient.query('BEGIN');
     }
-    await lockTicketAllocation(dbClient);
+    await lockNumeroPosizionaleAllocation(dbClient);
 
-    const existing = await getExistingTicketForUpdate(dbClient, w);
+    const existing = await getExistingNumeroPosizionaleForUpdate(dbClient, w);
     if (!existing) {
       throw new Error(`Account ${w} non trovato`);
     }
-    if (existing.ticket_number) {
+    if (existing.numero_posizionale) {
       if (shouldManageTx) {
         await dbClient.query('COMMIT');
       }
       return existing;
     }
 
-    const candidate = await findNextGemelloTicket(dbClient);
+    const candidate = await findNextGemelloNumeroPosizionale(dbClient);
     if (!candidate) {
-      throw new Error('Nessun ticket Gemello disponibile');
+      throw new Error('Nessun numero posizionale Gemello disponibile');
     }
 
     const occupato = await dbClient.query(
-      'SELECT id, wallet FROM accounts WHERE ticket_number = $1 FOR UPDATE',
+      'SELECT id, wallet FROM accounts WHERE numero_posizionale = $1 FOR UPDATE',
       [candidate]
     );
     if (occupato.rows.length > 0) {
       throw new Error(
-        `Ticket Gemello ${candidate} già occupato dall’account ${occupato.rows[0].wallet}`
+        `Numero posizionale Gemello ${candidate} già occupato dall’account ${occupato.rows[0].wallet}`
       );
     }
 
     const updated = await dbClient.query(
-      'UPDATE accounts SET ticket_number = $1, status = $2 WHERE wallet = $3 RETURNING *',
+      'UPDATE accounts SET numero_posizionale = $1, status = $2 WHERE wallet = $3 RETURNING *',
       [candidate, 'IN_CODA', w]
     );
 
@@ -940,17 +941,17 @@ async function updateAccountIdentity(accountId, { sigla = undefined, rootAccount
 }
 
 /**
- * Restituisce true se il numero ticket è pre-riservato per un Gemello (reg.10).
+ * Restituisce true se il numero posizionale è pre-riservato per un Gemello (reg.10).
  * Formula: 26, 40, 54, 68... = 26 + n×14  (n = 0, 1, 2, ...)
  */
-function isTicketGemello(n) {
+function isNumeroPosizionaleGemello(n) {
   return n >= 26 && (n - 26) % 14 === 0;
 }
 
-const TICKET_ADVISORY_LOCK_KEY = 42801;
+const NUMERO_POSIZIONALE_ADVISORY_LOCK_KEY = 42801;
 
-async function lockTicketAllocation(client) {
-  await client.query('SELECT pg_advisory_xact_lock($1) AS locked', [TICKET_ADVISORY_LOCK_KEY]);
+async function lockNumeroPosizionaleAllocation(client) {
+  await client.query('SELECT pg_advisory_xact_lock($1) AS locked', [NUMERO_POSIZIONALE_ADVISORY_LOCK_KEY]);
 }
 
 async function getAccountForUpdate(client, wallet) {
@@ -960,12 +961,12 @@ async function getAccountForUpdate(client, wallet) {
   );
 }
 
-async function getExistingTicketForUpdate(client, wallet) {
+async function getExistingNumeroPosizionaleForUpdate(client, wallet) {
   const res = await getAccountForUpdate(client, wallet);
   return res.rows[0] || null;
 }
 
-async function findNextOrdinaryTicket(client) {
+async function findNextOrdinaryNumeroPosizionale(client) {
   const res = await client.query(
     `WITH RECURSIVE candidates(n) AS (
        SELECT 1
@@ -977,7 +978,7 @@ async function findNextOrdinaryTicket(client) {
        WHERE EXISTS (
          SELECT 1
          FROM accounts
-         WHERE ticket_number = n
+         WHERE numero_posizionale = n
        )
        OR (
          n >= 26
@@ -986,13 +987,13 @@ async function findNextOrdinaryTicket(client) {
        OR EXISTS (
          SELECT 1
          FROM prenotazioni_funzioni pf
-         WHERE pf.ticket_number = n
+         WHERE pf.numero_posizionale = n
            AND pf.stato IN ('RESERVED','MATERIALIZED')
        )
        OR EXISTS (
          SELECT 1
          FROM funzioni f
-         WHERE f.ticket_prenotato = n
+         WHERE f.numero_posizionale_prenotato = n
            AND f.status IN ('RILASCIATO','POSIZIONATO')
        )
      )
@@ -1001,7 +1002,7 @@ async function findNextOrdinaryTicket(client) {
      WHERE NOT EXISTS (
        SELECT 1
        FROM accounts
-       WHERE ticket_number = n
+       WHERE numero_posizionale = n
      )
        AND NOT (
          n >= 26
@@ -1010,13 +1011,13 @@ async function findNextOrdinaryTicket(client) {
        AND NOT EXISTS (
          SELECT 1
          FROM prenotazioni_funzioni pf
-         WHERE pf.ticket_number = n
+         WHERE pf.numero_posizionale = n
            AND pf.stato IN ('RESERVED','MATERIALIZED')
        )
        AND NOT EXISTS (
          SELECT 1
          FROM funzioni f
-         WHERE f.ticket_prenotato = n
+         WHERE f.numero_posizionale_prenotato = n
            AND f.status IN ('RILASCIATO','POSIZIONATO')
        )
      ORDER BY n
@@ -1026,7 +1027,7 @@ async function findNextOrdinaryTicket(client) {
   return res.rows[0]?.n ?? null;
 }
 
-async function findNextGemelloTicket(client) {
+async function findNextGemelloNumeroPosizionale(client) {
   const res = await client.query(
     `WITH RECURSIVE candidates(n) AS (
        SELECT 26
@@ -1038,7 +1039,7 @@ async function findNextGemelloTicket(client) {
        WHERE EXISTS (
          SELECT 1
          FROM accounts
-         WHERE ticket_number = n
+         WHERE numero_posizionale = n
        )
      )
      SELECT n
@@ -1046,7 +1047,7 @@ async function findNextGemelloTicket(client) {
      WHERE NOT EXISTS (
        SELECT 1
        FROM accounts
-       WHERE ticket_number = n
+       WHERE numero_posizionale = n
      )
      ORDER BY n
      LIMIT 1`
@@ -1056,14 +1057,14 @@ async function findNextGemelloTicket(client) {
 }
 
 /**
- * Assegna il prossimo ticket disponibile all'account, SALTANDO
+ * Assegna il prossimo numero posizionale disponibile all'account, SALTANDO
  * i numeri pre-riservati ai Gemelli (26, 40, 54... = 26 + n×14).
  *
  * Questi slot sono tenuti liberi dal sistema fin dall'inizio (reg.10)
- * in modo che il ticket di ogni Gemello sia prenotato ancor prima
+ * in modo che il numero posizionale di ogni Gemello sia prenotato ancor prima
  * che l'Account si iscriva.
  */
-async function assignTicketToAccountId(accountId, client = null) {
+async function assignNumeroPosizionaleToAccountId(accountId, client = null) {
   if (!client) await initDatabase();
   const id = Number(accountId);
   if (!Number.isInteger(id) || id < 1) throw new Error('accountId non valido');
@@ -1071,18 +1072,18 @@ async function assignTicketToAccountId(accountId, client = null) {
   const dbClient = shouldManageTx ? await pg.getClient() : client;
   try {
     if (shouldManageTx) await dbClient.query('BEGIN');
-    await lockTicketAllocation(dbClient);
+    await lockNumeroPosizionaleAllocation(dbClient);
     const existingRes = await dbClient.query('SELECT * FROM accounts WHERE id = $1 FOR UPDATE', [id]);
     const existing = existingRes.rows[0];
     if (!existing) throw new Error(`Account ${id} non trovato`);
-    if (existing.ticket_number) {
+    if (existing.numero_posizionale) {
       if (shouldManageTx) await dbClient.query('COMMIT');
       return existing;
     }
-    const candidate = await findNextOrdinaryTicket(dbClient);
-    if (!candidate) throw new Error('Nessun ticket ordinario disponibile');
+    const candidate = await findNextOrdinaryNumeroPosizionale(dbClient);
+    if (!candidate) throw new Error('Nessun numero posizionale ordinario disponibile');
     const updated = await dbClient.query(
-      'UPDATE accounts SET ticket_number = $1, status = $2 WHERE id = $3 RETURNING *',
+      'UPDATE accounts SET numero_posizionale = $1, status = $2 WHERE id = $3 RETURNING *',
       [candidate, 'IN_CODA', id]
     );
     if (shouldManageTx) await dbClient.query('COMMIT');
@@ -1093,7 +1094,7 @@ async function assignTicketToAccountId(accountId, client = null) {
   } finally { if (shouldManageTx) dbClient.release(); }
 }
 
-async function assignNextGemelloTicketToAccountId(accountId, client = null) {
+async function assignNextGemelloNumeroPosizionaleToAccountId(accountId, client = null) {
   if (!client) await initDatabase();
   const id = Number(accountId);
   if (!Number.isInteger(id) || id < 1) throw new Error('accountId non valido');
@@ -1101,20 +1102,20 @@ async function assignNextGemelloTicketToAccountId(accountId, client = null) {
   const dbClient = shouldManageTx ? await pg.getClient() : client;
   try {
     if (shouldManageTx) await dbClient.query('BEGIN');
-    await lockTicketAllocation(dbClient);
+    await lockNumeroPosizionaleAllocation(dbClient);
     const existingRes = await dbClient.query('SELECT * FROM accounts WHERE id = $1 FOR UPDATE', [id]);
     const existing = existingRes.rows[0];
     if (!existing) throw new Error(`Account ${id} non trovato`);
-    if (existing.ticket_number) {
+    if (existing.numero_posizionale) {
       if (shouldManageTx) await dbClient.query('COMMIT');
       return existing;
     }
-    const candidate = await findNextGemelloTicket(dbClient);
-    if (!candidate) throw new Error('Nessun ticket Gemello disponibile');
-    const occupato = await dbClient.query('SELECT id FROM accounts WHERE ticket_number = $1 FOR UPDATE', [candidate]);
-    if (occupato.rows.length) throw new Error(`Ticket Gemello ${candidate} gia occupato`);
+    const candidate = await findNextGemelloNumeroPosizionale(dbClient);
+    if (!candidate) throw new Error('Nessun numero posizionale Gemello disponibile');
+    const occupato = await dbClient.query('SELECT id FROM accounts WHERE numero_posizionale = $1 FOR UPDATE', [candidate]);
+    if (occupato.rows.length) throw new Error(`Numero posizionale Gemello ${candidate} gia occupato`);
     const updated = await dbClient.query(
-      'UPDATE accounts SET ticket_number = $1, status = $2 WHERE id = $3 RETURNING *',
+      'UPDATE accounts SET numero_posizionale = $1, status = $2 WHERE id = $3 RETURNING *',
       [candidate, 'IN_CODA', id]
     );
     if (shouldManageTx) await dbClient.query('COMMIT');
@@ -1125,84 +1126,84 @@ async function assignNextGemelloTicketToAccountId(accountId, client = null) {
   } finally { if (shouldManageTx) dbClient.release(); }
 }
 
-async function assignTicket(wallet, client = null) {
+async function assignNumeroPosizionale(wallet, client = null) {
   const account = await getAccount(wallet, client);
   if (!account) throw new Error(`Account ${String(wallet).toLowerCase()} non trovato`);
-  return await assignTicketToAccountId(account.id, client);
+  return await assignNumeroPosizionaleToAccountId(account.id, client);
 }
 
 
 /**
- * Assegna un numero di ticket SPECIFICO (pre-riservato) a un account.
- * Usato esclusivamente per i Gemelli che hanno il ticket prenotato (reg.10).
+ * Assegna un numero posizionale SPECIFICO (pre-riservato) a un account.
+ * Usato esclusivamente per i Gemelli che hanno il numero posizionale prenotato (reg.10).
  *
  * @param {string} wallet
- * @param {number} ticketNumber  - Il numero esatto da assegnare (26, 40, 54...)
+ * @param {number} numeroPosizionale  - Il numero esatto da assegnare (26, 40, 54...)
  */
-async function assignSpecificTicket(wallet, ticketNumber) {
+async function assignSpecificNumeroPosizionale(wallet, numeroPosizionale) {
   await initDatabase();
   const w = wallet.toLowerCase();
-  const requestedTicket = Number(ticketNumber);
+  const requestedNumeroPosizionale = Number(numeroPosizionale);
 
-  if (!Number.isInteger(requestedTicket) || requestedTicket <= 0) {
-    throw new Error(`Numero ticket non valido: ${ticketNumber}`);
+  if (!Number.isInteger(requestedNumeroPosizionale) || requestedNumeroPosizionale <= 0) {
+    throw new Error(`Numero numero posizionale non valido: ${numeroPosizionale}`);
   }
 
   const client = await pg.getClient();
 
   try {
     await client.query('BEGIN');
-    await lockTicketAllocation(client);
+    await lockNumeroPosizionaleAllocation(client);
 
-    const existing = await getExistingTicketForUpdate(client, w);
+    const existing = await getExistingNumeroPosizionaleForUpdate(client, w);
 
     if (!existing) {
       throw new Error(`Account ${w} non trovato`);
     }
 
     if (
-      existing.ticket_number !== null &&
-      existing.ticket_number !== undefined
+      existing.numero_posizionale !== null &&
+      existing.numero_posizionale !== undefined
     ) {
-      const currentTicket = Number(existing.ticket_number);
+      const currentNumeroPosizionale = Number(existing.numero_posizionale);
 
-      if (currentTicket === requestedTicket) {
+      if (currentNumeroPosizionale === requestedNumeroPosizionale) {
         await client.query('COMMIT');
         return existing;
       }
 
       throw new Error(
-        `Account ${w} possiede già il ticket ${currentTicket}; impossibile assegnare il ticket ${requestedTicket}`
+        `Account ${w} possiede già il numero posizionale ${currentNumeroPosizionale}; impossibile assegnare il numero posizionale ${requestedNumeroPosizionale}`
       );
     }
 
     const occupato = await client.query(
       `SELECT id, wallet
        FROM accounts
-       WHERE ticket_number = $1
+       WHERE numero_posizionale = $1
        FOR UPDATE`,
-      [requestedTicket]
+      [requestedNumeroPosizionale]
     );
 
     if (occupato.rows.length > 0) {
       throw new Error(
-        `Ticket ${requestedTicket} già occupato dall’account ${occupato.rows[0].wallet}`
+        `Numero posizionale ${requestedNumeroPosizionale} già occupato dall’account ${occupato.rows[0].wallet}`
       );
     }
 
     const updated = await client.query(
       `UPDATE accounts
-       SET ticket_number = $1,
+       SET numero_posizionale = $1,
            status = $2
        WHERE wallet = $3
-         AND ticket_number IS NULL
+         AND numero_posizionale IS NULL
        RETURNING *`,
-      [requestedTicket, 'IN_CODA', w]
+      [requestedNumeroPosizionale, 'IN_CODA', w]
     );
 
     if (updated.rows.length !== 1) {
       throw new Error(
-        `Assegnazione del ticket ${requestedTicket} non completata per l’account ${w}`
+        `Assegnazione del numero posizionale ${requestedNumeroPosizionale} non completata per l’account ${w}`
       );
     }
 
@@ -1221,9 +1222,40 @@ async function assignSpecificTicket(wallet, ticketNumber) {
   }
 }
 
-async function getAccountByTicket(ticketNumber) {
+async function setAccountNumeroPosizionale(accountId, numeroPosizionale, client = null, { setSiglaIfNull = false } = {}) {
+  if (!client) await initDatabase();
+  const id = Number(accountId);
+  const numero = Number(numeroPosizionale);
+  if (!Number.isInteger(id) || id < 1) throw new Error('accountId non valido');
+  if (!Number.isInteger(numero) || numero < 1) throw new Error('numero_posizionale non valido');
+  const sql = `UPDATE accounts
+    SET numero_posizionale = CASE
+          WHEN numero_posizionale IS NULL THEN $2
+          WHEN numero_posizionale = $2 THEN numero_posizionale
+          ELSE numero_posizionale
+        END,
+        sigla = CASE
+          WHEN $3::boolean AND sigla IS NULL THEN $2::text
+          ELSE sigla
+        END,
+        status = CASE WHEN status = 'REGISTRATO' THEN 'IN_CODA' ELSE status END
+    WHERE id = $1
+      AND (numero_posizionale IS NULL OR numero_posizionale = $2)
+    RETURNING *`;
+  const params = [id, numero, Boolean(setSiglaIfNull)];
+  const row = client ? (await client.query(sql, params)).rows[0] || null : await pg.queryOne(sql, params);
+  if (!row) {
+    const existing = client
+      ? (await client.query('SELECT numero_posizionale FROM accounts WHERE id = $1', [id])).rows[0] || null
+      : await pg.queryOne('SELECT numero_posizionale FROM accounts WHERE id = $1', [id]);
+    throw new Error(`Account ${id}: numero_posizionale gia fissato a ${existing?.numero_posizionale ?? 'valore sconosciuto'}, impossibile assegnare ${numero}`);
+  }
+  return row;
+}
+
+async function getAccountByNumeroPosizionale(numeroPosizionale) {
   await initDatabase();
-  return await pg.queryOne('SELECT * FROM accounts WHERE ticket_number = $1', [ticketNumber]);
+  return await pg.queryOne('SELECT * FROM accounts WHERE numero_posizionale = $1', [numeroPosizionale]);
 }
 
 // ========================================
@@ -1372,16 +1404,26 @@ async function createPosizione({ tavolaId, casella, wallet, nome, tipo, donoImpo
   }
   if (client) {
     const result = await client.query(
-      `INSERT INTO posizioni (tavola_id, casella, wallet, nome, tipo, dono_importo, account_id, account_sigla)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO posizioni (tavola_id, casella, wallet, nome, tipo, dono_importo, account_id, account_sigla, numero_posizionale)
+       SELECT $1, $2, $3, $4, $5, $6, $7, $8,
+              CASE WHEN t.sezione = 'ENTRATA' AND t.livello = 0
+                   THEN (((t.numero - 1) * 6) + $2)::bigint
+                   ELSE NULL END
+       FROM tavole t
+       WHERE t.id = $1
        RETURNING *`,
       [tavolaId, casella, wallet.toLowerCase(), nome, tipo, donoImporto, accountId, accountSigla]
     );
     return result.rows[0] || null;
   }
   return await pg.queryOne(
-    `INSERT INTO posizioni (tavola_id, casella, wallet, nome, tipo, dono_importo, account_id, account_sigla)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO posizioni (tavola_id, casella, wallet, nome, tipo, dono_importo, account_id, account_sigla, numero_posizionale)
+     SELECT $1, $2, $3, $4, $5, $6, $7, $8,
+            CASE WHEN t.sezione = 'ENTRATA' AND t.livello = 0
+                 THEN (((t.numero - 1) * 6) + $2)::bigint
+                 ELSE NULL END
+     FROM tavole t
+     WHERE t.id = $1
      RETURNING *`,
     [tavolaId, casella, wallet.toLowerCase(), nome, tipo, donoImporto, accountId, accountSigla]
   );
@@ -1411,6 +1453,27 @@ async function updatePosizioneSdoppiamento(posizioneId, sdoppiamentoTavolaId, cl
   );
 }
 
+async function syncEntryPlacementIdentity({ posizioneId, tavolaSdoppiamentoId = null, accountId, accountSigla }, client = null) {
+  if (!client) await initDatabase();
+  const sqlPos = `UPDATE posizioni
+     SET account_sigla = $1
+     WHERE id = $2 AND account_id = $3
+     RETURNING *`;
+  const paramsPos = [accountSigla, Number(posizioneId), Number(accountId)];
+  const pos = client ? (await client.query(sqlPos, paramsPos)).rows[0] || null : await pg.queryOne(sqlPos, paramsPos);
+  if (!pos) throw new Error(`Posizione ${posizioneId}: identita account non sincronizzabile`);
+  if (tavolaSdoppiamentoId) {
+    const sqlT = `UPDATE tavole
+       SET faraone_sigla = $1
+       WHERE id = $2 AND faraone_account_id = $3
+       RETURNING *`;
+    const paramsT = [accountSigla, Number(tavolaSdoppiamentoId), Number(accountId)];
+    const tav = client ? (await client.query(sqlT, paramsT)).rows[0] || null : await pg.queryOne(sqlT, paramsT);
+    if (!tav) throw new Error(`Tavola sdoppiamento ${tavolaSdoppiamentoId}: identita account non sincronizzabile`);
+  }
+  return pos;
+}
+
 /**
  * Restituisce le caselle del livello Entrata riservate/materializzate per Funzioni.
  * La protezione e fail-closed: una posizione ordinaria o di riporto non puo consumarle.
@@ -1430,6 +1493,66 @@ async function getEntryReservedSlots({ turnoNumero, tavolaNumero, tavolaRelativa
   const params = [Number(turnoNumero), Number(tavolaNumero), Number(tavolaRelativa)];
   const rows = client ? (await client.query(sql, params)).rows : await pg.queryMany(sql, params);
   return rows.map(row => Number(row.casella)).filter(Number.isInteger);
+}
+
+async function shiftEntryFunctionReservationFromSlotOne({ turnoNumero, tavolaNumero, tavolaRelativa = 1, tavolaId }, client = null) {
+  if (!client) await initDatabase();
+  const dbClient = client || await pg.getClient();
+  const manage = !client;
+  try {
+    if (manage) await dbClient.query('BEGIN');
+    const rows = (await dbClient.query(
+      `SELECT * FROM prenotazioni_funzioni
+       WHERE turno_destinazione = $1
+         AND livello_destinazione = 0
+         AND casella = 1
+         AND stato = 'RESERVED'
+         AND (tavola_numero = $2 OR (tavola_numero IS NULL AND tavola_relativa = $3))
+       FOR UPDATE`,
+      [Number(turnoNumero), Number(tavolaNumero), Number(tavolaRelativa)]
+    )).rows;
+    if (!rows.length) {
+      if (manage) await dbClient.query('COMMIT');
+      return null;
+    }
+    if (rows.length > 1) throw new Error(`Piu prenotazioni Funzione contendono la casella 1 della tavola Entrata #${tavolaNumero}`);
+
+    const occupiedRows = tavolaId
+      ? (await dbClient.query('SELECT casella FROM posizioni WHERE tavola_id = $1', [Number(tavolaId)])).rows
+      : [];
+    const occupied = new Set(occupiedRows.map(r => Number(r.casella)));
+    const reservedRows = (await dbClient.query(
+      `SELECT casella FROM prenotazioni_funzioni
+       WHERE turno_destinazione = $1
+         AND livello_destinazione = 0
+         AND stato IN ('RESERVED','MATERIALIZED')
+         AND (tavola_numero = $2 OR (tavola_numero IS NULL AND tavola_relativa = $3))`,
+      [Number(turnoNumero), Number(tavolaNumero), Number(tavolaRelativa)]
+    )).rows;
+    const reserved = new Set(reservedRows.map(r => Number(r.casella)));
+    reserved.delete(1);
+
+    let target = null;
+    for (let c = 2; c <= 6; c += 1) {
+      if (!occupied.has(c) && !reserved.has(c)) { target = c; break; }
+    }
+    if (!target) throw new Error(`Impossibile spostare la Funzione dalla casella 1: tavola Entrata #${tavolaNumero} senza slot libero 2..6`);
+
+    const updated = (await dbClient.query(
+      `UPDATE prenotazioni_funzioni
+       SET casella = $1, updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [target, rows[0].id]
+    )).rows[0] || null;
+    if (manage) await dbClient.query('COMMIT');
+    return updated;
+  } catch (err) {
+    if (manage) { try { await dbClient.query('ROLLBACK'); } catch (_) {} }
+    throw err;
+  } finally {
+    if (manage) dbClient.release();
+  }
 }
 
 async function getEntryRolloverBySourceTable(sourceTavolaId, client = null) {
@@ -1547,12 +1670,12 @@ async function completaTurno(turnoId, doniTotali, client = null) {
 // CONTENITORI
 // ========================================
 
-async function addToContenitore({ tipo, wallet, ticketNumber, nome, importo, provenienza, accountId = null, accountSigla = null }, client = null) {
+async function addToContenitore({ tipo, wallet, numeroPosizionale, nome, importo, provenienza, accountId = null, accountSigla = null }, client = null) {
   if (!client) await initDatabase();
-  const sql = `INSERT INTO contenitori (tipo, wallet, ticket_number, nome, importo_disponibile, provenienza, account_id, account_sigla)
+  const sql = `INSERT INTO contenitori (tipo, wallet, numero_posizionale, nome, importo_disponibile, provenienza, account_id, account_sigla)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`;
-  const params = [tipo, wallet.toLowerCase(), ticketNumber, nome, importo, provenienza, accountId, accountSigla];
+  const params = [tipo, wallet.toLowerCase(), numeroPosizionale, nome, importo, provenienza, accountId, accountSigla];
   if (client) {
     const result = await client.query(sql, params);
     return result.rows[0] || null;
@@ -1564,7 +1687,7 @@ async function getNextFromContenitore(tipo, client = null) {
   if (!client) await initDatabase();
   const sql = `SELECT * FROM contenitori
      WHERE tipo = $1 AND status = 'IN_ATTESA'
-     ORDER BY ticket_number ASC NULLS LAST, id ASC
+     ORDER BY numero_posizionale ASC NULLS LAST, id ASC
      LIMIT 1`;
   if (client) {
     const result = await client.query(sql, [tipo]);
@@ -1598,14 +1721,14 @@ async function countInContenitore(tipo, client = null) {
 // FUNZIONI
 // ========================================
 
-async function createFunzione({ tipo, accountOrigineWallet, accountGeneratoWallet, accountOrigineId = null, accountGeneratoId = null, sigla, ticketPrenotato, importo, turnoRilascio, turnoEntrata, tavolaPosizionamento, posizioneInTavola }, client = null) {
+async function createFunzione({ tipo, accountOrigineWallet, accountGeneratoWallet, accountOrigineId = null, accountGeneratoId = null, sigla, numeroPosizionalePrenotato, importo, turnoRilascio, turnoEntrata, tavolaPosizionamento, posizioneInTavola }, client = null) {
   if (!client) {
     await initDatabase();
   }
-  const sql = `INSERT INTO funzioni (tipo, account_origine_wallet, account_generato_wallet, account_origine_id, account_generato_id, sigla, ticket_prenotato, importo, turno_rilascio, turno_entrata, tavola_posizionamento, posizione_in_tavola)
+  const sql = `INSERT INTO funzioni (tipo, account_origine_wallet, account_generato_wallet, account_origine_id, account_generato_id, sigla, numero_posizionale_prenotato, importo, turno_rilascio, turno_entrata, tavola_posizionamento, posizione_in_tavola)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      RETURNING *`;
-  const params = [tipo, accountOrigineWallet.toLowerCase(), accountGeneratoWallet ? accountGeneratoWallet.toLowerCase() : null, accountOrigineId, accountGeneratoId, sigla, ticketPrenotato, importo, turnoRilascio, turnoEntrata ?? null, tavolaPosizionamento, posizioneInTavola];
+  const params = [tipo, accountOrigineWallet.toLowerCase(), accountGeneratoWallet ? accountGeneratoWallet.toLowerCase() : null, accountOrigineId, accountGeneratoId, sigla, numeroPosizionalePrenotato, importo, turnoRilascio, turnoEntrata ?? null, tavolaPosizionamento, posizioneInTavola];
   if (client) {
     const result = await client.query(sql, params);
     return result.rows[0] || null;
@@ -1869,7 +1992,7 @@ async function createPrenotazioneFunzione({
   tavolaRelativa,
   tavolaNumero = null,
   casella,
-  ticketNumber = null
+  numeroPosizionale = null
 }, client = null) {
   if (!client) {
     await initDatabase();
@@ -1889,7 +2012,7 @@ async function createPrenotazioneFunzione({
       tavola_relativa,
       tavola_numero,
       casella,
-      ticket_number
+      numero_posizionale
     )
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
     ON CONFLICT (event_key) DO NOTHING
@@ -1911,7 +2034,7 @@ async function createPrenotazioneFunzione({
     tavolaRelativa,
     tavolaNumero,
     casella,
-    ticketNumber
+    numeroPosizionale
   ];
   let inserted;
   if (client) {
@@ -1960,8 +2083,8 @@ async function createPrenotazioneFunzione({
       || Number(existing.tavola_numero) === Number(tavolaNumero)
     )
     && (
-      (existing.ticket_number === null && ticketNumber === null)
-      || Number(existing.ticket_number) === Number(ticketNumber)
+      (existing.numero_posizionale === null && numeroPosizionale === null)
+      || Number(existing.numero_posizionale) === Number(numeroPosizionale)
     )
     && (
       (existing.blocco_destinazione === null && bloccoDestinazione === null)
@@ -2578,15 +2701,15 @@ module.exports = {
   initDatabase,
 
   // Accounts
-  createAccount, getAccount, getAccountsByWallet, getAccountById, getAccountByKey, getAccountByIdentity, updateAccountIdentity, assignTicket, assignTicketToAccountId, assignSpecificTicket, assignNextGemelloTicket, assignNextGemelloTicketToAccountId, getAccountByTicket,
+  createAccount, getAccount, getAccountsByWallet, getAccountById, getAccountByKey, getAccountByIdentity, updateAccountIdentity, assignNumeroPosizionale, assignNumeroPosizionaleToAccountId, assignSpecificNumeroPosizionale, assignNextGemelloNumeroPosizionale, assignNextGemelloNumeroPosizionaleToAccountId, getAccountByNumeroPosizionale, setAccountNumeroPosizionale,
 
   // Tavole
   getNextTavolaNumero, createTavola, getTavola, getTavolaById,
   updateTavolaStatus, updateTavolaDoni, countPosizioniInTavola,
 
   // Posizioni
-  createPosizione, getPosizioniTavola, updatePosizioneSdoppiamento,
-  getEntryReservedSlots, getEntryRolloverBySourceTable, createEntryRolloverAudit,
+  createPosizione, getPosizioniTavola, updatePosizioneSdoppiamento, syncEntryPlacementIdentity,
+  getEntryReservedSlots, shiftEntryFunctionReservationFromSlotOne, getEntryRolloverBySourceTable, createEntryRolloverAudit,
 
   // Turni
   createTurno, getTurnoCorrente, incrementSacerdotiEntrati,

@@ -94,9 +94,14 @@ function main() {
   assert.ok(verifiedEntry.includes('donorWallet: payer'), 'Donazione Gift deve conservare il pagatore');
   assert.ok(verifiedEntry.includes('beneficiaryWallet: beneficiary'), 'Donazione Gift deve conservare il beneficiario');
 
-  const paymentSegment = gift.slice(gift.indexOf('async function processPharaohPayment'), gift.indexOf('async function getCommunityAccess'));
-  assert.ok(!paymentSegment.includes('rogCommunity.'), 'Community beneficiario non deve essere gate per la posizione Gift');
-  assert.ok(paymentSegment.includes('requireCompleted: true'), 'Gift deve fare read-back ROG COMPLETED prima di creare valore');
+  assert.ok(api.includes("code: 'GIFT_SMARTBOX_REQUIRED'"), 'La creazione Gift legacy deve essere disabilitata per i nuovi regali');
+
+  const smartboxSegment = gift.slice(gift.indexOf('// CARTA REGALO SMARTBOX'), gift.indexOf('async function getCommunityAccess'));
+  assert.ok(smartboxSegment.includes('PAID_AWAITING_ACTIVATION'), 'Smartbox deve separare pagamento e attivazione');
+  assert.ok(smartboxSegment.includes('GIFT_BENEFICIARY_COMMUNITY_REQUIRED'), 'Smartbox deve richiedere Community del beneficiario');
+  assert.ok(smartboxSegment.includes("activationSource: 'BENEFICIARY'"), 'Smartbox deve distinguere attivazione beneficiario');
+  assert.ok(smartboxSegment.includes("activationSource: 'PURCHASER_FALLBACK'"), 'Smartbox deve prevedere fallback al regalante');
+  assert.ok(smartboxSegment.includes('activation_expires_at'), 'Smartbox deve applicare scadenza persistente');
 
   for (const unique of [
     'uq_gift_sessions_rog_usdc_tx_lower', 'uq_gift_sessions_rog_register_tx_lower',

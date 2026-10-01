@@ -33,6 +33,7 @@ function runStaticChecks() {
     'database/0010_secondary_identity_wallets.sql',
     'database/0011_entry_function_reservation_guard.sql',
     'database/0012_entry_rollover_100.sql',
+    'database/0022_cassa_posizione_completa.sql',
     'database/0013_pharaoh_treasury_registry_v3.sql',
     'database/0014_rog_rha_registration_evidence.sql',
     'database/0015_direct_rog_async_gate.sql',
@@ -56,7 +57,7 @@ function runStaticChecks() {
 
   try {
     const plan = migrations.loadPlan();
-    check(plan.length === 15, 'PIANO_MIGRAZIONI_DEVE_AVERE_15_STEP', failures);
+    check(plan.length === 24, 'PIANO_MIGRAZIONI_DEVE_AVERE_24_STEP', failures);
     check(plan.some(m => m.id === '0004_cross_movements'), 'MIGRATION_0004_MANCANTE', failures);
     check(plan.some(m => m.id === '0005_rha_dual_300_200'), 'MIGRATION_0005_MANCANTE', failures);
     check(plan.some(m => m.id === '0006_thot_humanitarian_reentry'), 'MIGRATION_0006_MANCANTE', failures);
@@ -66,6 +67,7 @@ function runStaticChecks() {
     check(plan.some(m => m.id === '0010_secondary_identity_wallets'), 'MIGRATION_0010_MANCANTE', failures);
     check(plan.some(m => m.id === '0011_entry_function_reservation_guard'), 'MIGRATION_0011_MANCANTE', failures);
     check(plan.some(m => m.id === '0012_entry_rollover_100'), 'MIGRATION_0012_MANCANTE', failures);
+    check(plan.some(m => m.id === '0022_cassa_posizione_completa'), 'MIGRATION_0022_CASSA_MANCANTE', failures);
     check(plan.some(m => m.id === '0013_pharaoh_treasury_registry_v3'), 'MIGRATION_0013_MANCANTE', failures);
     check(plan.some(m => m.id === '0014_rog_rha_registration_evidence'), 'MIGRATION_0014_MANCANTE', failures);
     check(plan.some(m => m.id === '0015_direct_rog_async_gate'), 'MIGRATION_0015_MANCANTE', failures);
@@ -146,8 +148,12 @@ function runStaticChecks() {
   const entryRollover = read('database/0012_entry_rollover_100.sql');
   check(entryRollover.includes("'ROLLOVER'"), 'ENTRY_ROLLOVER_TIPO_MANCANTE', failures);
   check(entryRollover.includes('entry_rollovers'), 'ENTRY_ROLLOVER_AUDIT_MANCANTE', failures);
-  check(directFlow.includes('materializzaRolloverEntrata'), 'ENTRY_ROLLOVER_FLOW_MANCANTE', failures);
-  check(directFlow.includes('sacerdotiNecessari: 5'), 'ENTRY_DA_TAVOLA_2_DEVE_RICHIEDERE_5_NUOVI_INGRESSI', failures);
+  const cassaMigration = read('database/0022_cassa_posizione_completa.sql');
+  check(directFlow.includes('materializzaCassaEntrata'), 'ENTRY_CASSA_FLOW_MANCANTE', failures);
+  check(cassaMigration.includes("p.tipo = 'CASSA'"), 'ENTRY_CASSA_RECONCILIATION_MANCANTE', failures);
+  check(cassaMigration.includes('sdoppiamento_tavola_id'), 'ENTRY_CASSA_SDOPPIAMENTO_MANCANTE', failures);
+  check(directFlow.includes('sacerdotiNecessari: 6'), 'ENTRY_TURNO_DEVE_CONTARE_6_POSIZIONI_INCLUSA_CASSA', failures);
+  check(directFlow.includes('incrementSacerdotiEntrati(nuovoTurno.id'), 'ENTRY_CASSA_DEVE_CONTARE_COME_POSIZIONE', failures);
   check(!directFlow.includes('ENTRY_RESERVE_WALLET'), 'ENTRY_RESERVE_WALLET_LEGACY_PRESENTE', failures);
   check(!api.includes('/api/admin/doni-pendenti/entry-reserve/process'), 'ENTRY_RESERVE_ENDPOINT_LEGACY_PRESENTE', failures);
   const dbManager = read('db-manager.js');

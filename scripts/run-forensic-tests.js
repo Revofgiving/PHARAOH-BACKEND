@@ -5,6 +5,7 @@ const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..');
 const tests = [
   'scripts/test-direct-gift-static.js',
+  'scripts/test-gift-smartbox-3months.js',
   'scripts/test-direct-gift-dynamic.js',
   'scripts/test-direct-rog-external-gate.js',
   'scripts/test-blockchain-cross-dynamic.js',
@@ -16,6 +17,7 @@ const tests = [
   'scripts/test-iside-reentry-receiver-gift.js',
   'scripts/test-autonomous-reentry-roots.js',
   'scripts/test-entry-rollover-100.js',
+  'scripts/test-function-reservations-65-human.js',
   'scripts/test-secondary-shared-wallet-identity.js',
   'scripts/test-wallet-person-paths-static.js',
   'scripts/test-no-credit-no-dono-al-volo.js',

@@ -11,9 +11,12 @@
  *   ... e così via: dalla Tavola 2 ogni chiusura usa 1 riporto + 5 nuovi ingressi.
  *
  * SISTEMA PHARAOH — BLOCCO 1:
- *   Anubis : 2 sacerdoti   → 18 donatori totali  (A conclude Anubis)
- *   Horus  : +4 sacerdoti  → 42 donatori totali  (A conclude Horus)
- *   Rha    : +12 sacerdoti → 78 donatori totali  (A conclude Rha, esce)
+ *   Il primo turno richiede 18 sacerdoti da formare.
+ *   Dal secondo turno, 5 posizioni del Blocco 1 sono gia prenotate alle Funzioni
+ *   generate a RHA dal Faraone precedente (3 Simbionti + Perpetuo + Gemello):
+ *   restano 13 sacerdoti da formare.
+ *   Poiche ogni tavola Entrata T2+ ha CASSA in casella 1, ogni sacerdote residuo
+ *   richiede 5 HUMAN: 13 × 5 = 65 HUMAN.
  *
  * INGRESSO AUTOMATICO:
  *   Tavola 1: al 6° dono reale → tavola completa.
@@ -24,9 +27,9 @@
  *   → NON serve una seconda transazione blockchain dal sacerdote!
  *
  * SCALABILITÀ PER I FARAONI SUCCESSIVI:
- *   A (primo Faraone) : 78 donatori totali
- *   1 (secondo Faraone): 72 (risparmia 6 perché già formato nel ciclo di A)
- *   2, 3... : 72 ciascuno (già pre-formati dal ciclo precedente)
+ *   Le Funzioni sono prenotate prima degli ingressi HUMAN e non possono essere
+ *   consumate da iscrizioni ordinarie. Dal secondo turno: 13 tavole da completare
+ *   × 5 HUMAN per tavola = 65 HUMAN per arrivare al primo dono al Faraone.
  *
  * BLOCCO 2 (solo account secondari: Perpetui e Gemelli):
  *   → L4 Thot : ingresso 5.000, uscita 15.000, netto 4.000; 500 umanitari + 5 rientri Entrata
@@ -595,6 +598,20 @@ async function _processaDonoEntrataWalletLocked({ wallet, txHash, sessionRef, no
       accountSigla: account.sigla || null,
       client
     });
+    account = await db.setAccountNumeroPosizionale(
+      account.id,
+      placement.numeroPosizionaleGlobale,
+      client,
+      { setSiglaIfNull: account.tipo === 'PRIMARIO' }
+    );
+    if (account.sigla) {
+      await db.syncEntryPlacementIdentity({
+        posizioneId: placement.posizione.id,
+        tavolaSdoppiamentoId: placement.tavolaSdoppiamento?.id || null,
+        accountId: account.id,
+        accountSigla: account.sigla
+      }, client);
+    }
     await db.incrementSacerdotiEntrati(turno.id, client);
 
     if (placement.tavolaCompleta) {
@@ -793,23 +810,25 @@ async function avviaNuovoTurnoEntrata(turnoChiuso, client = null) {
     faraoneAccountId: prossimoErede.id,
     faraoneSigla:     prossimoErede.sigla || prossimaTavola.faraone_sigla || null,
     tavolaFaraoneNum: prossimaTavola.numero,
-    sacerdotiNecessari: 5
+    sacerdotiNecessari: 6
   }, client);
 
-  const rollover = await tableManager.materializzaRolloverEntrata({
+  const cassaEntrata = await tableManager.materializzaCassaEntrata({
     sourceTavola,
     targetTavola: tavolaAttiva,
     targetTurno: nuovoNumeroTurno,
     cassaWallet: CASSA_PHARAOH_WALLET,
     client
   });
+  // La Cassa e una posizione completa: conta tra i 6 occupanti del turno Entrata.
+  await db.incrementSacerdotiEntrati(nuovoTurno.id, client);
 
   console.log(`\n🔄 Nuovo turno entrata #${nuovoNumeroTurno}`);
   console.log(`   Erede: ${prossimaTavola.faraone_wallet}`);
   console.log(`   Tavola: #${prossimaTavola.numero} (convertita a PERCORSO)`);
-  console.log(`   Riporto: 100 USDC Cassa PHARAOH in casella ${rollover?.placement?.casellaOccupata || rollover?.audit?.target_casella}`);
+  console.log(`   Cassa PHARAOH: posizione completa in casella ${cassaEntrata?.placement?.casellaOccupata || cassaEntrata?.audit?.target_casella}`);
 
-  return { turno: nuovoTurno, tavola: tavolaAttiva, rollover };
+  return { turno: nuovoTurno, tavola: tavolaAttiva, cassaEntrata };
 }
 
 // ========================================
@@ -910,7 +929,7 @@ async function processaDonoPharaoh() {
   }
 
   // 4. Posiziona sacerdote-donatore
-  const nome = sacerdote.nome || `#${sacerdote.ticket_number}`;
+  const nome = sacerdote.nome || `#${sacerdote.numero_posizionale}`;
   const risultato = await tableManager.posizionaDonatore({
     tavolaId: tavolaAttiva.id,
     tavolaNumero: tavolaAttiva.numero,
@@ -1004,7 +1023,7 @@ async function processaDonoPharaoh() {
 
   return {
     success: true,
-    sacerdote: { wallet: sacerdote.wallet, ticket: sacerdote.ticket_number, nome },
+    sacerdote: { wallet: sacerdote.wallet, numero_posizionale: sacerdote.numero_posizionale, nome },
     livello: livelloCorrente,
     tavola: { numero: tavolaAttiva.numero, completa: risultato.tavolaCompleta },
     entrati,
@@ -2287,7 +2306,7 @@ async function getStatoSistema() {
   const stats = await pg.queryOne(`
     SELECT
       (SELECT COUNT(*) FROM accounts) AS totale_account,
-      (SELECT COUNT(*) FROM accounts WHERE ticket_number IS NOT NULL) AS account_con_ticket,
+      (SELECT COUNT(*) FROM accounts WHERE numero_posizionale IS NOT NULL) AS account_con_numero_posizionale,
       (SELECT COUNT(*) FROM tavole) AS totale_tavole,
       (SELECT COUNT(*) FROM tavole WHERE status = 'APERTA') AS tavole_aperte,
       (SELECT COUNT(*) FROM tavole WHERE status = 'COMPLETATA') AS tavole_completate,
@@ -2302,7 +2321,7 @@ async function getStatoSistema() {
     contenitori,
     statistiche: {
       totaleAccount: Number(stats?.totale_account) || 0,
-      accountConTicket: Number(stats?.account_con_ticket) || 0,
+      accountConNumeroPosizionale: Number(stats?.account_con_numero_posizionale) || 0,
       totaleTavole: Number(stats?.totale_tavole) || 0,
       tavoleAperte: Number(stats?.tavole_aperte) || 0,
       tavoleCompletate: Number(stats?.tavole_completate) || 0,

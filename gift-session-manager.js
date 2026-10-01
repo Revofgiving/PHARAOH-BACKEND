@@ -6,7 +6,7 @@ const pg = require('./pg-connection-manager');
 const WALLET_RE = /^0x[a-f0-9]{40}$/;
 const HASH_RE = /^0x[a-f0-9]{64}$/;
 const GIFT_ID_RE = /^gift_[A-Za-z0-9_-]{16,100}$/;
-const STATUS_ORDER = Object.freeze({ CREATED: 10, ROG_PAYMENT_CONFIRMED: 20, ROG_REGISTERED: 30, ROG_COMPLETED: 40, PHARAOH_VERIFIED: 50, POSITION_ASSIGNED: 60, CANCELLED: 99 });
+const STATUS_ORDER = Object.freeze({ CREATED: 10, ROG_PAYMENT_CONFIRMED: 20, ROG_REGISTERED: 30, PHARAOH_VERIFIED: 40, PAID_AWAITING_ACTIVATION: 50, ACTIVATING: 55, ROG_COMPLETED: 60, POSITION_ASSIGNED: 70, CANCELLED: 99 });
 
 function makeError(message, code, retryable = false) { const error = new Error(message); error.code = code; error.retryable = retryable; return error; }
 function normalizeWallet(value, label = 'wallet') { const wallet = String(value || '').trim().toLowerCase(); if (!WALLET_RE.test(wallet)) throw makeError(`${label} non valido`, 'GIFT_WALLET_INVALID'); return wallet; }
@@ -15,7 +15,7 @@ function normalizeGiftId(value) { const giftId = String(value || '').trim(); if 
 function newGiftId() { return `gift_${crypto.randomBytes(24).toString('hex')}`; }
 function publicSession(row) {
   if (!row) return null;
-  return { giftId: row.gift_id, paymentWallet: row.payment_wallet, beneficiaryWallet: row.beneficiary_wallet || null, giftMessage: row.gift_message || null, status: row.status, rogAmountUsdc: row.rog_amount_usdc == null ? null : Number(row.rog_amount_usdc), rogUsdcTxHash: row.rog_usdc_tx_hash || null, rogRegisterTxHash: row.rog_register_tx_hash || null, rogDonationId: row.rog_donation_id || null, pharaohAmountUsdc: row.pharaoh_amount_usdc == null ? null : Number(row.pharaoh_amount_usdc), pharaohTxHash: row.pharaoh_tx_hash || null, registryTxHash: row.registry_tx_hash || null, registryTxId: row.registry_session_id == null ? null : Number(row.registry_session_id), registryBlockNumber: row.registry_block_number == null ? null : Number(row.registry_block_number), registryConfirmedAt: row.registry_confirmed_at || null, beneficiaryWasCommunityMember: typeof row.beneficiary_was_community_member === 'boolean' ? row.beneficiary_was_community_member : null, positionResult: row.position_result || null, createdAt: row.created_at || null, updatedAt: row.updated_at || null, completedAt: row.completed_at || null };
+  return { giftId: row.gift_id, paymentWallet: row.payment_wallet, beneficiaryWallet: row.beneficiary_wallet || null, giftMessage: row.gift_message || null, status: row.status, rogAmountUsdc: row.rog_amount_usdc == null ? null : Number(row.rog_amount_usdc), rogUsdcTxHash: row.rog_usdc_tx_hash || null, rogRegisterTxHash: row.rog_register_tx_hash || null, rogDonationId: row.rog_donation_id || null, pharaohAmountUsdc: row.pharaoh_amount_usdc == null ? null : Number(row.pharaoh_amount_usdc), pharaohTxHash: row.pharaoh_tx_hash || null, registryTxHash: row.registry_tx_hash || null, registryTxId: row.registry_session_id == null ? null : Number(row.registry_session_id), registryBlockNumber: row.registry_block_number == null ? null : Number(row.registry_block_number), registryConfirmedAt: row.registry_confirmed_at || null, beneficiaryWasCommunityMember: typeof row.beneficiary_was_community_member === 'boolean' ? row.beneficiary_was_community_member : null, positionResult: row.position_result || null, createdAt: row.created_at || null, updatedAt: row.updated_at || null, completedAt: row.completed_at || null, giftCodeHint: row.gift_code_hint || null, activatedAt: row.activated_at || null, activationExpiresAt: row.activation_expires_at || null, expiredAt: row.expired_at || null, activationSource: row.activation_source || null, fallbackAssignedAt: row.fallback_assigned_at || null };
 }
 async function getSession(giftId, client = null, { forUpdate = false } = {}) { const id = normalizeGiftId(giftId); const runner = client || pg; const result = await runner.query(`SELECT * FROM gift_sessions WHERE gift_id = $1${forUpdate ? ' FOR UPDATE' : ''}`, [id]); return result.rows[0] || null; }
 async function requireSession(giftId, paymentWallet = null, client = null, opts = {}) { const row = await getSession(giftId, client, opts); if (!row) throw makeError('Carta Regalo non trovata', 'GIFT_NOT_FOUND'); if (paymentWallet) { const payer = normalizeWallet(paymentWallet, 'paymentWallet'); if (String(row.payment_wallet).toLowerCase() !== payer) throw makeError('Wallet pagatore non corrispondente alla Carta Regalo', 'GIFT_PAYER_MISMATCH'); } return row; }
@@ -38,7 +38,7 @@ async function createSession({ giftId = null, paymentWallet, beneficiaryWallet =
   }
 }
 
-const UPDATE_FIELDS = new Set(['status', 'beneficiary_wallet', 'rog_amount_usdc', 'gift_message', 'rog_usdc_tx_hash', 'rog_register_tx_hash', 'rog_donation_id', 'rog_transfer_proof', 'rog_registration_proof', 'rog_result', 'rog_completed_at', 'pharaoh_amount_usdc', 'pharaoh_tx_hash', 'pharaoh_proof', 'pharaoh_verified_at', 'registry_tx_hash', 'registry_session_id', 'registry_block_number', 'registry_confirmed_at', 'beneficiary_was_community_member', 'beneficiary_community_checked_at', 'position_result', 'last_error', 'completed_at']);
+const UPDATE_FIELDS = new Set(['status', 'beneficiary_wallet', 'rog_amount_usdc', 'gift_message', 'rog_usdc_tx_hash', 'rog_register_tx_hash', 'rog_donation_id', 'rog_transfer_proof', 'rog_registration_proof', 'rog_result', 'rog_completed_at', 'pharaoh_amount_usdc', 'pharaoh_tx_hash', 'pharaoh_proof', 'pharaoh_verified_at', 'registry_tx_hash', 'registry_session_id', 'registry_block_number', 'registry_confirmed_at', 'beneficiary_was_community_member', 'beneficiary_community_checked_at', 'position_result', 'last_error', 'completed_at', 'gift_code_hash', 'gift_code_hint', 'activated_at', 'activation_expires_at', 'expired_at', 'activation_source', 'fallback_assigned_at']);
 async function updateSession(giftId, fields, client = null) { const id = normalizeGiftId(giftId); const entries = Object.entries(fields || {}).filter(([key]) => UPDATE_FIELDS.has(key)); if (!entries.length) return getSession(id, client); const sets = entries.map(([key], index) => `${key} = $${index + 2}`); const values = entries.map(([, value]) => value); const runner = client || pg; try { const result = await runner.query(`UPDATE gift_sessions SET ${sets.join(', ')}, updated_at = NOW() WHERE gift_id = $1 RETURNING *`, [id, ...values]); if (!result.rows[0]) throw makeError('Carta Regalo non trovata', 'GIFT_NOT_FOUND'); return result.rows[0]; } catch (error) { if (String(error?.code || '') === '23505') throw makeError('Prova Carta Regalo gia associata a un altro evento', 'GIFT_PROOF_CONFLICT'); throw error; } }
 function normalizeGiftAmount(value) {
   const amount = Number(value);
@@ -62,10 +62,61 @@ function assertActive(row) { if (row?.status === 'CANCELLED') throw makeError('C
 async function recordRogPayment({ giftId, paymentWallet, txHash, transferProof }, client = null) { const row = assertActive(await requireSession(giftId, paymentWallet, client, { forUpdate: Boolean(client) })); const hash = normalizeHash(txHash, 'rogUsdcTxHash'); assertImmutable(row, 'rog_usdc_tx_hash', hash); return updateSession(giftId, { status: statusAtLeast(row, 'ROG_PAYMENT_CONFIRMED') ? row.status : 'ROG_PAYMENT_CONFIRMED', rog_usdc_tx_hash: hash, rog_transfer_proof: transferProof ? JSON.stringify(transferProof) : row.rog_transfer_proof, last_error: null }, client); }
 async function recordRogRegistration({ giftId, paymentWallet, registerTxHash, donationId, registrationProof }, client = null) { const row = assertActive(await requireSession(giftId, paymentWallet, client, { forUpdate: Boolean(client) })); if (!statusAtLeast(row, 'ROG_PAYMENT_CONFIRMED')) throw makeError('Pagamento ROG della Carta Regalo non ancora confermato', 'GIFT_ROG_PAYMENT_REQUIRED'); const tx = normalizeHash(registerTxHash, 'rogRegisterTxHash'); const id = String(donationId || '').trim(); if (!/^\d+$/.test(id) || BigInt(id) <= 0n) throw makeError('rogDonationId non valido', 'GIFT_ROG_DONATION_ID_INVALID'); assertImmutable(row, 'rog_register_tx_hash', tx); assertImmutable(row, 'rog_donation_id', id); return updateSession(giftId, { status: statusAtLeast(row, 'ROG_REGISTERED') ? row.status : 'ROG_REGISTERED', rog_register_tx_hash: tx, rog_donation_id: id, rog_registration_proof: registrationProof ? JSON.stringify(registrationProof) : row.rog_registration_proof, last_error: null }, client); }
 async function recordRogCompleted({ giftId, paymentWallet, rogResult, beneficiaryWasCommunityMember = null }, client = null) { const row = assertActive(await requireSession(giftId, paymentWallet, client, { forUpdate: Boolean(client) })); if (!statusAtLeast(row, 'ROG_REGISTERED')) throw makeError('registerDonation ROG della Carta Regalo non ancora confermata', 'GIFT_ROG_REGISTRATION_REQUIRED'); return updateSession(giftId, { status: statusAtLeast(row, 'ROG_COMPLETED') ? row.status : 'ROG_COMPLETED', rog_result: rogResult ? JSON.stringify(rogResult) : row.rog_result, rog_completed_at: row.rog_completed_at || new Date().toISOString(), ...(typeof beneficiaryWasCommunityMember === 'boolean' ? { beneficiary_was_community_member: row.beneficiary_was_community_member == null ? beneficiaryWasCommunityMember : row.beneficiary_was_community_member, beneficiary_community_checked_at: row.beneficiary_community_checked_at || new Date().toISOString() } : {}), last_error: null }, client); }
-async function recordPharaohVerified({ giftId, paymentWallet, txHash, proof, amountUsdc }, client = null) { const row = assertActive(await requireSession(giftId, paymentWallet, client, { forUpdate: Boolean(client) })); if (!statusAtLeast(row, 'ROG_PAYMENT_CONFIRMED') || !row.rog_usdc_tx_hash) throw makeError('Pagamento ROG Carta Regalo non ancora confermato', 'GIFT_ROG_PAYMENT_REQUIRED'); const amount = Number(amountUsdc); if (amount !== 100) throw makeError('Carta Regalo PHARAOH richiede esattamente 100 USDC', 'GIFT_PHARAOH_AMOUNT_INVALID'); const hash = normalizeHash(txHash, 'pharaohTxHash'); assertImmutable(row, 'pharaoh_tx_hash', hash); if (row.pharaoh_amount_usdc != null && Number(row.pharaoh_amount_usdc) !== 100) throw makeError('Importo PHARAOH gia associato a valore differente', 'GIFT_PROOF_CONFLICT'); return updateSession(giftId, { status: statusAtLeast(row, 'PHARAOH_VERIFIED') ? row.status : 'PHARAOH_VERIFIED', pharaoh_amount_usdc: 100, pharaoh_tx_hash: hash, pharaoh_proof: proof ? JSON.stringify(proof) : row.pharaoh_proof, pharaoh_verified_at: row.pharaoh_verified_at || new Date().toISOString(), last_error: null }, client); }
+async function recordPharaohVerified({ giftId, paymentWallet, txHash, proof, amountUsdc }, client = null) { const row = assertActive(await requireSession(giftId, paymentWallet, client, { forUpdate: Boolean(client) })); if (!statusAtLeast(row, 'ROG_REGISTERED') || !row.rog_usdc_tx_hash || !row.rog_register_tx_hash || !row.rog_donation_id) throw makeError('Registrazione ROG Carta Regalo non ancora confermata', 'GIFT_ROG_REGISTRATION_REQUIRED'); const amount = Number(amountUsdc); if (amount !== 100) throw makeError('Carta Regalo PHARAOH richiede esattamente 100 USDC', 'GIFT_PHARAOH_AMOUNT_INVALID'); const hash = normalizeHash(txHash, 'pharaohTxHash'); assertImmutable(row, 'pharaoh_tx_hash', hash); if (row.pharaoh_amount_usdc != null && Number(row.pharaoh_amount_usdc) !== 100) throw makeError('Importo PHARAOH gia associato a valore differente', 'GIFT_PROOF_CONFLICT'); return updateSession(giftId, { status: statusAtLeast(row, 'PHARAOH_VERIFIED') ? row.status : 'PHARAOH_VERIFIED', pharaoh_amount_usdc: 100, pharaoh_tx_hash: hash, pharaoh_proof: proof ? JSON.stringify(proof) : row.pharaoh_proof, pharaoh_verified_at: row.pharaoh_verified_at || new Date().toISOString(), last_error: null }, client); }
 async function recordRegistrySubmitted({ giftId, txHash }, client = null) { const row = assertActive(await requireSession(giftId, null, client, { forUpdate: Boolean(client) })); if (!statusAtLeast(row, 'PHARAOH_VERIFIED')) throw makeError('Pagamento PHARAOH della Carta Regalo non verificato', 'GIFT_PHARAOH_PAYMENT_REQUIRED'); const hash = normalizeHash(txHash, 'registryTxHash'); assertImmutable(row, 'registry_tx_hash', hash); return updateSession(giftId, { registry_tx_hash: hash, last_error: null }, client); }
 async function recordRegistryConfirmed({ giftId, txHash, txId, blockNumber }, client = null) { const row = assertActive(await requireSession(giftId, null, client, { forUpdate: Boolean(client) })); if (!statusAtLeast(row, 'PHARAOH_VERIFIED')) throw makeError('Pagamento PHARAOH della Carta Regalo non verificato', 'GIFT_PHARAOH_PAYMENT_REQUIRED'); const hash = normalizeHash(txHash, 'registryTxHash'); assertImmutable(row, 'registry_tx_hash', hash); const id = Number(txId); const block = Number(blockNumber); if (!Number.isSafeInteger(id) || id <= 0 || !Number.isSafeInteger(block) || block <= 0) throw makeError('Prova PharaohRegistry Carta Regalo non valida', 'GIFT_REGISTRY_PROOF_INVALID'); if (row.registry_session_id != null && Number(row.registry_session_id) !== id) throw makeError('Carta Regalo gia associata a txId PharaohRegistry differente', 'GIFT_PROOF_CONFLICT'); return updateSession(giftId, { registry_tx_hash: hash, registry_session_id: id, registry_block_number: block, registry_confirmed_at: row.registry_confirmed_at || new Date().toISOString(), last_error: null }, client); }
 async function markPositionAssigned({ giftId, result }, client = null) { const row = assertActive(await requireSession(giftId, null, client, { forUpdate: Boolean(client) })); if (row.status === 'POSITION_ASSIGNED') return row; if (!statusAtLeast(row, 'PHARAOH_VERIFIED')) throw makeError('Pagamento PHARAOH della Carta Regalo non verificato', 'GIFT_PHARAOH_PAYMENT_REQUIRED'); return updateSession(giftId, { status: 'POSITION_ASSIGNED', position_result: JSON.stringify(result || {}), completed_at: new Date().toISOString(), last_error: null }, client); }
 async function recordError(giftId, error, client = null) { try { return await updateSession(giftId, { last_error: String(error?.message || error || 'errore').slice(0, 1000) }, client); } catch (_) { return null; } }
 async function withGiftLock(giftId, operation, dependencies = {}) { const id = normalizeGiftId(giftId); const database = dependencies.pg || pg; const client = await database.getClient(); const lockKey = `PHARAOH:GIFT:${id}`; let locked = false; try { await client.query('SELECT pg_advisory_lock(hashtext($1))', [lockKey]); locked = true; return await operation(); } finally { if (locked) { try { await client.query('SELECT pg_advisory_unlock(hashtext($1))', [lockKey]); } catch (_) {} } client.release(); } }
-module.exports = { GIFT_ID_RE, STATUS_ORDER, normalizeGiftId, normalizeWallet, normalizeHash, newGiftId, publicSession, createSession, bindRogIdentity, normalizeGiftAmount, getSession, requireSession, updateSession, recordRogPayment, recordRogRegistration, recordRogCompleted, recordPharaohVerified, recordRegistrySubmitted, recordRegistryConfirmed, markPositionAssigned, recordError, statusAtLeast, assertActive, withGiftLock, _makeError: makeError };
+
+
+async function markSmartboxPaid(giftId, client = null) {
+  const id = normalizeGiftId(giftId); const runner = client || pg;
+  const result = await runner.query(
+    `UPDATE gift_sessions
+        SET status='PAID_AWAITING_ACTIVATION',
+            activation_expires_at=COALESCE(activation_expires_at, COALESCE(pharaoh_verified_at, NOW()) + INTERVAL '3 months'),
+            last_error=NULL, updated_at=NOW()
+      WHERE gift_id=$1
+      RETURNING *`, [id]
+  );
+  if (!result.rows[0]) throw makeError('Carta Regalo non trovata', 'GIFT_NOT_FOUND');
+  return result.rows[0];
+}
+async function findExpiredSmartboxes(limit = 25) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 25, 1), 100);
+  const result = await pg.query(
+    `SELECT * FROM gift_sessions
+      WHERE status='PAID_AWAITING_ACTIVATION'
+        AND completed_at IS NULL
+        AND activation_expires_at IS NOT NULL
+        AND activation_expires_at <= NOW()
+      ORDER BY activation_expires_at ASC
+      LIMIT $1`, [safeLimit]
+  );
+  return result.rows || [];
+}
+
+function normalizeGiftCode(value) {
+  const raw = String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+  if (!/^PHR-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(raw)) throw makeError('Codice Carta Regalo non valido', 'GIFT_CODE_INVALID');
+  return raw;
+}
+function generateGiftCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const bytes = crypto.randomBytes(16);
+  let body = '';
+  for (let i = 0; i < 16; i += 1) body += alphabet[bytes[i] % alphabet.length];
+  return `PHR-${body.slice(0,4)}-${body.slice(4,8)}-${body.slice(8,12)}-${body.slice(12,16)}`;
+}
+function hashGiftCode(code) { return crypto.createHash('sha256').update(normalizeGiftCode(code), 'utf8').digest('hex'); }
+async function setGiftCode({ giftId, code }, client = null) {
+  const normalized = normalizeGiftCode(code);
+  return updateSession(giftId, { gift_code_hash: hashGiftCode(normalized), gift_code_hint: normalized.slice(-4) }, client);
+}
+async function getSessionByGiftCode(code, client = null, { forUpdate = false } = {}) {
+  const hash = hashGiftCode(code); const runner = client || pg;
+  const result = await runner.query(`SELECT * FROM gift_sessions WHERE gift_code_hash = $1${forUpdate ? ' FOR UPDATE' : ''}`, [hash]);
+  return result.rows[0] || null;
+}
+module.exports = { GIFT_ID_RE, STATUS_ORDER, normalizeGiftId, normalizeWallet, normalizeHash, newGiftId, publicSession, createSession, bindRogIdentity, normalizeGiftAmount, getSession, requireSession, updateSession, recordRogPayment, recordRogRegistration, recordRogCompleted, recordPharaohVerified, recordRegistrySubmitted, recordRegistryConfirmed, markPositionAssigned, recordError, statusAtLeast, assertActive, withGiftLock, normalizeGiftCode, generateGiftCode, hashGiftCode, setGiftCode, getSessionByGiftCode, markSmartboxPaid, findExpiredSmartboxes, _makeError: makeError };

@@ -510,11 +510,8 @@ function registerAdminRoutes({ app, pg, security }) {
       );
       if (!tavola) return res.status(404).json({ success: false, error: 'Tavola non trovata' });
       const posizioni = await pg.queryMany(`
-        SELECT
-          p.*,
-          COALESCE(a.ticket_number, NULL) AS ticket_number
+        SELECT p.*
         FROM posizioni p
-        LEFT JOIN accounts a ON a.wallet = p.wallet
         WHERE p.tavola_id = $1
         ORDER BY p.casella ASC
       `, [tavola.id]);

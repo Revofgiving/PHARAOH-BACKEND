@@ -58,7 +58,12 @@ function publicSession(row) {
     positionResult: row.position_result || null,
     createdAt: row.created_at || null,
     updatedAt: row.updated_at || null,
-    completedAt: row.completed_at || null
+    completedAt: row.completed_at || null,
+    rogEligibilitySource: row.rog_eligibility_source || null,
+    rogEligibilityCompletedAt: row.rog_eligibility_completed_at || null,
+    rogEligibilityExpiresAt: row.rog_eligibility_expires_at || null,
+    rogClaimedAt: row.rog_claimed_at || null,
+    rogClaimExpiresAt: row.rog_claim_expires_at || null
   };
 }
 
@@ -109,7 +114,9 @@ async function updateSession(sessionRef, fields, client = null) {
     'rog_fulfillment_updated_at', 'rog_confirmed_at',
     'pharaoh_amount_usdc', 'pharaoh_tx_hash', 'pharaoh_proof', 'pharaoh_verified_at',
     'registry_tx_hash', 'registry_session_id', 'registry_block_number', 'registry_confirmed_at',
-    'position_result', 'last_error', 'completed_at'
+    'position_result', 'last_error', 'completed_at',
+    'rog_eligibility_source', 'rog_eligibility_completed_at', 'rog_eligibility_expires_at',
+    'rog_claimed_at', 'rog_claim_expires_at'
   ]);
   const entries = Object.entries(fields || {}).filter(([key]) => allowed.has(key));
   if (!entries.length) return getSession(ref, client);

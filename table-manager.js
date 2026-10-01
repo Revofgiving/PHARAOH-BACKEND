@@ -41,7 +41,7 @@ function getLivelloConfig(livello) {
  * Ogni tavola occupa sempre un blocco fisso di 6 valori:
  * Tavola 1 = 1..6, Tavola 2 = 7..12, Tavola 3 = 13..18, ecc.
  * Il valore dipende esclusivamente da tavola + casella, quindi include anche
- * ROLLOVER Cassa e Funzioni materializzate/prenotate.
+ * Cassa PHARAOH e Funzioni materializzate/prenotate.
  */
 function calcolaPosizioneGlobaleEntrata(tavolaNumero, casella) {
   const tavola = Number(tavolaNumero);
@@ -230,7 +230,7 @@ async function resolveCasellaDisponibile({
  * @param {number} params.livello - Livello corrente
  * @param {string} params.wallet - Wallet donatore
  * @param {string} params.nome - Nome donatore
- * @param {string} params.tipo - DONATORE | SIMBIONTE | PERPETUO | GEMELLO
+ * @param {string} params.tipo - DONATORE | CASSA | SIMBIONTE | PERPETUO | GEMELLO
  * @param {number} params.donoImporto - Importo del dono
  * @param {number} params.turno - Turno corrente
  * @param {boolean} params.sdoppiabile - Se true crea tavola sdoppiamento (reg.7: simbionti = false)
@@ -249,6 +249,7 @@ async function posizionaDonatore({
   capacitaTavola = null,
   accountId = null,
   accountSigla = null,
+  casellaForzata = null,
   client = null
 }) {
   const config = getLivelloConfig(livello);
@@ -256,7 +257,16 @@ async function posizionaDonatore({
     Number(capacitaTavola) > 0
       ? Number(capacitaTavola)
       : config.capacita;
-  const slot = await resolveCasellaDisponibile({
+  if (Number(livello) === 0 && tipo === 'CASSA' && Number(casellaForzata) === 1) {
+    await db.shiftEntryFunctionReservationFromSlotOne({
+      turnoNumero: turno,
+      tavolaNumero,
+      tavolaRelativa: 1,
+      tavolaId
+    }, client);
+  }
+
+  let slot = await resolveCasellaDisponibile({
     tavolaId,
     tavolaNumero,
     livello,
@@ -264,6 +274,24 @@ async function posizionaDonatore({
     capacita: capacitaEffettiva,
     client
   });
+
+  if (casellaForzata !== null && casellaForzata !== undefined) {
+    const forced = Number(casellaForzata);
+    const posizioni = await db.getPosizioniTavola(tavolaId, client);
+    const occupied = new Set(posizioni.map(p => Number(p.casella)));
+    const riservate = Number(livello) === 0
+      ? await db.getEntryReservedSlots({ turnoNumero: turno, tavolaNumero, tavolaRelativa: 1 }, client)
+      : [];
+    if (!Number.isInteger(forced) || forced < 1 || forced > capacitaEffettiva) {
+      throw new Error(`Casella forzata non valida: ${casellaForzata}`);
+    }
+    if (occupied.has(forced)) throw new Error(`Tavola #${tavolaNumero}: casella ${forced} gia occupata`);
+    if (Number(livello) === 0 && riservate.includes(forced)) {
+      throw new Error(`Tavola Entrata #${tavolaNumero}: casella ${forced} ancora riservata a una Funzione`);
+    }
+    slot = { casella: forced, occupate: occupied.size, riservate };
+  }
+
   const occupate = Number(slot.occupate) || 0;
   const casella = slot.casella;
 
@@ -333,39 +361,59 @@ async function posizionaDonatore({
 }
 
 /**
- * Materializza il riporto da 100 USDC dalla tavola Entrata appena chiusa
- * alla tavola Entrata successiva.
+ * Materializza la posizione CASSA PHARAOH nella tavola Entrata successiva.
  *
- * Regola recovery 4/9/2026:
- * - Tavola 1 (Fondo A): 6 donatori reali = 600; 500 finanziano la progressione;
- *   i 100 eccedenti restano in Cassa PHARAOH e diventano una posizione di riporto
- *   nella tavola successiva.
- * - Dalla Tavola 2 in poi: 1 posizione ROLLOVER da 100 + 5 nuovi donatori = 600;
- *   alla chiusura i successivi 100 vengono riportati ancora.
- * - Il riporto non crea account, ticket o sdoppiamento e non puo occupare
- *   una casella riservata a una Funzione.
+ * Regola definitiva 29/09/2026:
+ * - Tavola 1: 6 HUMAN.
+ * - Dalla Tavola 2 in poi: casella 1 = nuova posizione CASSA PHARAOH da 100 USDC;
+ *   caselle 2..6 = 5 HUMAN/Funzioni secondo le prenotazioni.
+ * - La CASSA e una posizione completa del movimento: ha numero_posizionale,
+ *   account_id autonomo, sigla, tavola personale di sdoppiamento, progredisce,
+ *   puo generare Funzioni e puo ricevere doni come ogni altra posizione PRIMARIO.
+ * - L'audit entry_rollovers conserva soltanto la provenienza economica dei 100 USDC;
+ *   NON rappresenta piu una posizione "tecnica" senza identita.
  */
-async function materializzaRolloverEntrata({
+async function materializzaCassaEntrata({
   sourceTavola,
   targetTavola,
   targetTurno,
   cassaWallet,
   client
 }) {
-  if (!client) throw new Error('Client transazionale obbligatorio per rollover Entrata');
-  if (!sourceTavola?.id || !targetTavola?.id) throw new Error('Tavole sorgente/destinazione rollover mancanti');
+  if (!client) throw new Error('Client transazionale obbligatorio per posizione Cassa Entrata');
+  if (!sourceTavola?.id || !targetTavola?.id) throw new Error('Tavole sorgente/destinazione Cassa mancanti');
   if (Number(targetTavola.numero) <= 1 || Number(targetTurno) <= 1) {
-    throw new Error('Il rollover Entrata e ammesso soltanto dalla Tavola/Turno 2 in poi');
+    throw new Error('La posizione Cassa Entrata e prevista soltanto dalla Tavola/Turno 2 in poi');
   }
   const wallet = String(cassaWallet || '').trim().toLowerCase();
-  if (!/^0x[a-f0-9]{40}$/.test(wallet)) throw new Error('Wallet Cassa PHARAOH non valido per rollover Entrata');
+  if (!/^0x[a-f0-9]{40}$/.test(wallet)) throw new Error('Wallet Cassa PHARAOH non valido');
 
-  const existing = await db.getEntryRolloverBySourceTable(sourceTavola.id, client);
-  if (existing) {
-    if (Number(existing.target_tavola_id) !== Number(targetTavola.id) || String(existing.cassa_wallet).toLowerCase() !== wallet) {
-      throw new Error(`Rollover Entrata sorgente ${sourceTavola.id} gia materializzato con destinazione diversa`);
+  const numeroPosizionale = calcolaPosizioneGlobaleEntrata(targetTavola.numero, 1);
+  const accountKey = `SYSTEM:CASSA:ENTRATA:${numeroPosizionale}`;
+
+  const existingAudit = await db.getEntryRolloverBySourceTable(sourceTavola.id, client);
+  if (existingAudit) {
+    if (Number(existingAudit.target_tavola_id) !== Number(targetTavola.id) || String(existingAudit.cassa_wallet).toLowerCase() !== wallet) {
+      throw new Error(`Riporto economico sorgente ${sourceTavola.id} gia materializzato con destinazione diversa`);
     }
-    return { audit: existing, idempotent: true };
+    const existingAccount = await db.getAccountByKey(accountKey, client);
+    if (!existingAccount) {
+      throw new Error(`Audit Cassa esistente senza account ${accountKey}: riconciliazione richiesta`);
+    }
+    return { audit: existingAudit, account: existingAccount, idempotent: true };
+  }
+
+  let cassaAccount = await db.getAccountByKey(accountKey, client);
+  if (!cassaAccount) {
+    cassaAccount = await db.createAccount({
+      wallet,
+      nome: `CASSA PHARAOH #${numeroPosizionale}`,
+      tipo: 'PRIMARIO',
+      sigla: null,
+      accountKey,
+      rootAccountId: null,
+      originKind: 'CASSA_ENTRY'
+    }, client);
   }
 
   const placement = await posizionaDonatore({
@@ -373,22 +421,39 @@ async function materializzaRolloverEntrata({
     tavolaNumero: targetTavola.numero,
     livello: 0,
     wallet,
-    nome: 'CASSA PHARAOH - RIPORTO 100',
-    tipo: 'ROLLOVER',
+    nome: `CASSA PHARAOH #${numeroPosizionale}`,
+    tipo: 'CASSA',
     donoImporto: 100,
     turno: targetTurno,
-    sdoppiabile: false,
+    sdoppiabile: true,
     capacitaTavola: 6,
-    accountId: null,
-    accountSigla: null,
+    accountId: cassaAccount.id,
+    accountSigla: cassaAccount.sigla || null,
+    casellaForzata: 1,
     client
   });
 
-  if (placement.tavolaSdoppiamento) {
-    throw new Error('Il rollover Entrata non deve generare sdoppiamento');
+  if (!placement.tavolaSdoppiamento) {
+    throw new Error('La posizione Cassa Entrata deve generare la propria tavola di sdoppiamento');
   }
 
-  const eventKey = `PHARAOH:ENTRATA:ROLLOVER:${sourceTavola.id}:${targetTavola.id}`;
+  cassaAccount = await db.setAccountNumeroPosizionale(
+    cassaAccount.id,
+    numeroPosizionale,
+    client,
+    { setSiglaIfNull: true }
+  );
+  if (Number(cassaAccount.root_account_id) !== Number(cassaAccount.id)) {
+    cassaAccount = await db.updateAccountIdentity(cassaAccount.id, { rootAccountId: cassaAccount.id }, client);
+  }
+  await db.syncEntryPlacementIdentity({
+    posizioneId: placement.posizione.id,
+    tavolaSdoppiamentoId: placement.tavolaSdoppiamento.id,
+    accountId: cassaAccount.id,
+    accountSigla: cassaAccount.sigla
+  }, client);
+
+  const eventKey = `PHARAOH:ENTRATA:CASSA:${sourceTavola.id}:${targetTavola.id}`;
   const audit = await db.createEntryRolloverAudit({
     eventKey,
     sourceTavolaId: sourceTavola.id,
@@ -402,7 +467,7 @@ async function materializzaRolloverEntrata({
     posizioneId: placement.posizione.id
   }, client);
 
-  return { audit, placement, idempotent: false };
+  return { audit, placement, account: cassaAccount, idempotent: false };
 }
 
 // ========================================
@@ -833,7 +898,7 @@ module.exports = {
   creaTavolaPercorsoOperativaHorus,
   creaTavolaSdoppiamento,
   posizionaDonatore,
-  materializzaRolloverEntrata,
+  materializzaCassaEntrata,
   avanzaSacerdotiAlLivello,
   avanzaAnubisAHorusPrimoTurnoStrutturale,
   avanzaHorusARhaStrutturale,
