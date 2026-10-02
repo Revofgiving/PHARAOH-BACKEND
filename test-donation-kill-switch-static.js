@@ -1,0 +1,23 @@
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const root = path.resolve(__dirname, '..');
+const api = fs.readFileSync(path.join(root, 'api-server.js'), 'utf8');
+const db = fs.readFileSync(path.join(root, 'db-manager.js'), 'utf8');
+
+assert.ok(db.includes("'donazioni_blocco'"), 'Deve esistere uno stato persistente dedicato alle donazioni');
+assert.ok(db.includes('bloccaDonazioni'), 'Manca bloccaDonazioni');
+assert.ok(db.includes('riattivaDonazioni'), 'Manca riattivaDonazioni');
+assert.ok(db.includes('getStatoBloccoDonazioni'), 'Manca getStatoBloccoDonazioni');
+assert.ok(api.includes("/api/admin/donazioni/blocca"), 'Manca endpoint admin blocco donazioni');
+assert.ok(api.includes("/api/admin/donazioni/riattiva"), 'Manca endpoint admin riattiva donazioni');
+assert.ok(api.includes("/api/admin/donazioni/stato"), 'Manca endpoint admin stato donazioni');
+assert.ok(api.includes("/api/donazioni/stato"), 'Manca endpoint pubblico stato donazioni');
+assert.ok(api.includes("code: 'DONATIONS_BLOCKED'"), 'Manca errore canonico DONATIONS_BLOCKED');
+assert.ok(api.includes("path === '/api/donazione/diretta/session'"), 'DIRECT start non protetto');
+assert.ok(api.includes("path.startsWith('/api/donazione/diretta/rog/')"), 'DIRECT ROG non protetto');
+assert.ok(api.includes("path === '/api/donazione/entrata/wallet'"), 'Pagamento PHARAOH DIRECT non protetto');
+assert.ok(api.includes("path === '/api/gift/create'"), 'Gift create non protetto');
+assert.ok(api.includes("path === '/api/cross/donation/entrata'"), 'Cross entry non protetto');
+assert.ok(!api.includes("path.startsWith('/api/account')"), 'Le API account non devono essere bloccate dal donation switch');
+console.log('PASS donation kill switch static');

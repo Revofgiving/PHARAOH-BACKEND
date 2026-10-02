@@ -22,7 +22,6 @@ const payoutManager  = require('./payout-manager');
 const rogCommunity = require('./rog-community-manager');
 const rogDonation = require('./rog-donation-manager');
 const directDonation = require('./direct-donation-manager');
-const directEligibility = require('./direct-rog-eligibility-manager');
 const giftFlow = require('./gift-flow-manager');
 const crossAuth = require('./cross-platform-auth');
 const crossEntry = require('./cross-entry-manager');
@@ -127,6 +126,63 @@ app.use(async (req, res, next) => {
     });
   }
   next();
+});
+
+// 9. DONATION KILL SWITCH — blocca soltanto i nuovi flussi di dono.
+// Le API di consultazione (Area Personale, stato, contenuti) restano disponibili.
+const isDonationMutation = (req) => {
+  if (req.method !== 'POST') return false;
+  const path = req.path;
+  return (
+    path === '/api/donazione/diretta/session' ||
+    path.startsWith('/api/donazione/diretta/rog/') ||
+    path === '/api/donazione/entrata/wallet' ||
+    path === '/api/donazione/entrata' ||
+    path === '/api/donazione/pharaoh' ||
+    path === '/api/gift/create' ||
+    /^\/api\/gift\/[^/]+\/(rog\/(external\/verify|payment|register)|pharaoh\/payment)$/.test(path) ||
+    path === '/api/cross/donation/entrata'
+  );
+};
+
+app.use(async (req, res, next) => {
+  if (!isDonationMutation(req)) return next();
+  try {
+    const blocco = await db.getStatoBloccoDonazioni();
+    if (blocco.bloccate) {
+      return res.status(503).json({
+        success: false,
+        code: 'DONATIONS_BLOCKED',
+        error: 'DONAZIONI BLOCCATE',
+        motivo: blocco.motivo || 'Donazioni temporaneamente sospese',
+        bloccateDal: blocco.timestamp || null
+      });
+    }
+  } catch (error) {
+    security.securityLog('DONATION_KILL_SWITCH_UNAVAILABLE', error.message, req.ip);
+    return res.status(503).json({
+      success: false,
+      code: 'DONATION_GATE_UNAVAILABLE',
+      error: 'Stato donazioni non verificabile. Riprovare più tardi.'
+    });
+  }
+  next();
+});
+
+// Stato pubblico, sola lettura: permette al frontend di mostrare subito il banner.
+app.get('/api/donazioni/stato', async (_req, res) => {
+  try {
+    const stato = await db.getStatoBloccoDonazioni();
+    res.json({
+      success: true,
+      ...stato,
+      message: stato.bloccate
+        ? 'Le donazioni PHARAOH sono temporaneamente sospese. STIAMO LAVORANDO PER VOI.'
+        : 'DONAZIONI ATTIVE'
+    });
+  } catch (e) {
+    res.status(503).json({ success: false, code: 'DONATION_GATE_UNAVAILABLE', error: security.sanitizeError(e) });
+  }
 });
 
 // ========================================
@@ -659,38 +715,6 @@ app.post('/api/rog/community/register', async (req, res) => {
 // DIRECT — 2 USDC ROG + 100 USDC PHARAOH = 1 posizione
 // ========================================
 
-// Stato persistente ricostruito dal wallet: Community + HUMAN ROG + finestra 60 minuti.
-app.get('/api/donazione/diretta/eligibility/:wallet', async (req, res) => {
-  try {
-    const wallet = security.validateWallet(req.params.wallet);
-    res.json(await directEligibility.getEligibility(wallet));
-  } catch (e) {
-    security.securityLog('DIRECT_ELIGIBILITY_ERROR', e.message, req.ip);
-    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'DIRECT_ELIGIBILITY_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
-  }
-});
-
-// Seconda verifica obbligatoria immediatamente prima di aprire il pagamento PHARAOH.
-app.post('/api/donazione/diretta/authorize', security.donationLimiter, async (req, res) => {
-  try {
-    const wallet = security.validateWallet(req.body.wallet);
-    res.json(await directEligibility.authorize(wallet));
-  } catch (e) {
-    security.securityLog('DIRECT_AUTHORIZATION_ERROR', e.message, req.ip);
-    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'DIRECT_AUTHORIZATION_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
-  }
-});
-
-app.post('/api/donazione/diretta/authorize/release', security.donationLimiter, async (req, res) => {
-  try {
-    const wallet = security.validateWallet(req.body.wallet);
-    const sessionRef = String(req.body.sessionRef || '').trim();
-    res.json(await directEligibility.release(wallet, sessionRef));
-  } catch (e) {
-    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'DIRECT_AUTHORIZATION_RELEASE_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
-  }
-});
-
 app.post('/api/donazione/diretta/session',
   security.donationLimiter,
   async (req, res) => {
@@ -839,72 +863,17 @@ app.post('/api/donazione/entrata/wallet',
 // CARTA REGALO — pagatore distinto dal beneficiario
 // ========================================
 
-
-// SMARTBOX 30-09-2026: acquisto senza beneficiario, attivazione successiva con codice.
-app.post('/api/gift/smartbox/create', security.donationLimiter, async (req, res) => {
-  try {
-    const paymentWallet = security.validateWallet(req.body.paymentWallet || req.body.donor, 'paymentWallet');
-    const giftMessage = security.sanitizeString(req.body.giftMessage, 500);
-    const result = await giftFlow.createSmartboxGift({ paymentWallet, giftMessage });
-    res.status(201).json(result);
-  } catch (e) {
-    security.securityLog('GIFT_SMARTBOX_CREATE_ERROR', e.message, req.ip);
-    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'GIFT_SMARTBOX_CREATE_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
-  }
-});
-
-app.post('/api/gift/smartbox/:giftId/rog/payment', security.donationLimiter, async (req, res) => {
-  try {
-    const paymentWallet = security.validateWallet(req.body.paymentWallet || req.body.donor, 'paymentWallet');
-    const rogUsdcTxHash = security.validateTxHash(req.body.rogUsdcTxHash || req.body.txHash);
-    res.json(await giftFlow.confirmSmartboxRogPayment({ giftId: req.params.giftId, paymentWallet, rogUsdcTxHash }));
-  } catch (e) {
-    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'GIFT_SMARTBOX_ROG_PAYMENT_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
-  }
-});
-
-app.post('/api/gift/smartbox/:giftId/rog/register', security.donationLimiter, async (req, res) => {
-  try {
-    const paymentWallet = security.validateWallet(req.body.paymentWallet || req.body.donor, 'paymentWallet');
-    const rogRegisterTxHash = security.validateTxHash(req.body.rogRegisterTxHash || req.body.registerTxHash);
-    const rogDonationId = String(req.body.rogDonationId || req.body.donationId || '').trim();
-    res.json(await giftFlow.confirmSmartboxRogRegistration({ giftId: req.params.giftId, paymentWallet, rogRegisterTxHash, rogDonationId }));
-  } catch (e) {
-    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'GIFT_SMARTBOX_ROG_REGISTER_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
-  }
-});
-
-app.post('/api/gift/smartbox/:giftId/pharaoh/payment', security.donationLimiter, async (req, res) => {
-  try {
-    const paymentWallet = security.validateWallet(req.body.paymentWallet || req.body.donor, 'paymentWallet');
-    const pharaohTxHash = security.validateTxHash(req.body.pharaohTxHash || req.body.txHash);
-    res.json(await giftFlow.confirmSmartboxPharaohPayment({ giftId: req.params.giftId, paymentWallet, pharaohTxHash }));
-  } catch (e) {
-    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'GIFT_SMARTBOX_PHARAOH_PAYMENT_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
-  }
-});
-
-app.post('/api/gift/smartbox/redeem', security.donationLimiter, async (req, res) => {
-  try {
-    const beneficiaryWallet = security.validateWallet(req.body.beneficiaryWallet || req.body.wallet, 'beneficiaryWallet');
-    const beneficiaryName = security.sanitizeNome(req.body.beneficiaryName || req.body.nome);
-    const giftCode = String(req.body.giftCode || '').trim();
-    res.json(await giftFlow.redeemSmartboxGift({ giftCode, beneficiaryWallet, beneficiaryName }));
-  } catch (e) {
-    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'GIFT_SMARTBOX_REDEEM_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
-  }
-});
-
-app.post('/api/gift/smartbox/status', async (req, res) => {
-  try { res.json(await giftFlow.getSmartboxByCode({ giftCode: String(req.body.giftCode || '').trim() })); }
-  catch (e) { res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'GIFT_SMARTBOX_STATUS_ERROR', error: security.sanitizeError(e) }); }
-});
-
-
 app.post('/api/gift/create', security.donationLimiter, async (req, res) => {
-  // 30-09-2026: nuove Carte Regalo esclusivamente modello Smartbox.
-  // Gli endpoint legacy restano disponibili solo per recovery di sessioni storiche gia esistenti.
-  return res.status(410).json({ success: false, code: 'GIFT_SMARTBOX_REQUIRED', error: 'Nuove Carte Regalo: usare il flusso Smartbox con codice di attivazione.' });
+  try {
+    const paymentWallet = security.validateWallet(req.body.paymentWallet || req.body.donor, 'paymentWallet');
+    const beneficiaryWallet = req.body.beneficiaryWallet ? security.validateWallet(req.body.beneficiaryWallet, 'beneficiaryWallet') : null;
+    const giftMessage = security.sanitizeString(req.body.giftMessage, 500);
+    const result = await giftFlow.createGift({ giftId: req.body.giftId || null, paymentWallet, beneficiaryWallet, giftMessage });
+    res.status(result.created ? 201 : 200).json(result);
+  } catch (e) {
+    security.securityLog('GIFT_CREATE_ERROR', e.message, req.ip);
+    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'GIFT_CREATE_ERROR', retryable: e.retryable === true, giftId: e.giftId || null, error: security.sanitizeError(e) });
+  }
 });
 
 app.post('/api/gift/:giftId/rog/external/verify', security.donationLimiter, async (req, res) => {
@@ -1246,6 +1215,49 @@ app.post('/api/admin/sblocca',
 );
 
 /**
+ * Kill switch dedicato alle DONAZIONI.
+ * Non spegne le API di consultazione e non cancella operazioni già confermate.
+ */
+app.get('/api/admin/donazioni/stato',
+  security.requireAdminKey,
+  async (_req, res) => {
+    try {
+      const stato = await db.getStatoBloccoDonazioni();
+      res.json({ success: true, ...stato });
+    } catch (e) {
+      res.status(500).json({ success: false, error: security.sanitizeError(e) });
+    }
+  }
+);
+
+app.post('/api/admin/donazioni/blocca',
+  security.requireAdminKey,
+  async (req, res) => {
+    try {
+      const motivo = security.sanitizeString(req.body?.motivo, 200) || 'Blocco manuale dal pannello admin';
+      const stato = await db.bloccaDonazioni(motivo);
+      security.securityLog('DONATION_KILL_SWITCH', `DONAZIONI BLOCCATE. Motivo: ${motivo}`, req.ip);
+      res.json({ success: true, message: 'DONAZIONI BLOCCATE', ...stato });
+    } catch (e) {
+      res.status(500).json({ success: false, error: security.sanitizeError(e) });
+    }
+  }
+);
+
+app.post('/api/admin/donazioni/riattiva',
+  security.requireAdminKey,
+  async (req, res) => {
+    try {
+      const stato = await db.riattivaDonazioni();
+      security.securityLog('DONATION_KILL_SWITCH', 'DONAZIONI RIATTIVATE', req.ip);
+      res.json({ success: true, message: 'DONAZIONI ATTIVE', ...stato });
+    } catch (e) {
+      res.status(500).json({ success: false, error: security.sanitizeError(e) });
+    }
+  }
+);
+
+/**
  * Stato completo del sistema (DB, blocco, KYC stats).
  */
 app.get('/api/admin/stato',
@@ -1254,6 +1266,7 @@ app.get('/api/admin/stato',
     try {
       const dbOk      = await pg.testConnection();
       const blocco    = await db.getStatoBlocco();
+      const donazioni = await db.getStatoBloccoDonazioni();
       const statoSys  = await donationFlow.getStatoSistema();
       const telegram  = !!process.env.TELEGRAM_BOT_TOKEN;
       const whatsapp  = !!(process.env.TWILIO_SID && process.env.JONNY_WHATSAPP);
@@ -1261,6 +1274,7 @@ app.get('/api/admin/stato',
         success: true,
         db: { ok: dbOk },
         blocco,
+        donazioni,
         alert: { telegram, whatsapp },
         ...statoSys
       });
@@ -1500,9 +1514,7 @@ async function start() {
   startRogFulfillmentWorker();
   startPayoutRegistryWorker();
 
-  giftFlow.startSmartboxExpiryReconciler();
-
-app.listen(PORT, () => {
+  app.listen(PORT, () => {
     console.log(`\n🌐 Server PHARAOH in ascolto su http://localhost:${PORT}`);
     console.log(`\n📋 Endpoint principali:`);
     console.log(`   GET  /api/health              → Health check`);

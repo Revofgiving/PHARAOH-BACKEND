@@ -2643,6 +2643,52 @@ async function getStatoBlocco() {
 }
 
 // ========================================
+// DONATION KILL SWITCH — blocco solo nuovi doni
+// ========================================
+
+async function bloccaDonazioni(motivo = 'Donazioni sospese dall amministratore') {
+  await initDatabase();
+  const value = {
+    bloccate: true,
+    motivo,
+    timestamp: new Date().toISOString()
+  };
+  await pg.query(
+    `INSERT INTO state_persistence (key, value, updated_at)
+     VALUES ('donazioni_blocco', $1, NOW())
+     ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+    [JSON.stringify(value)]
+  );
+  return value;
+}
+
+async function riattivaDonazioni() {
+  await initDatabase();
+  const value = {
+    bloccate: false,
+    timestamp: new Date().toISOString()
+  };
+  await pg.query(
+    `INSERT INTO state_persistence (key, value, updated_at)
+     VALUES ('donazioni_blocco', $1, NOW())
+     ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+    [JSON.stringify(value)]
+  );
+  return value;
+}
+
+async function getStatoBloccoDonazioni() {
+  await initDatabase();
+  const row = await pg.queryOne('SELECT value FROM state_persistence WHERE key = $1', ['donazioni_blocco']);
+  if (!row || !row.value || typeof row.value !== 'object') return { bloccate: false };
+  return {
+    bloccate: row.value.bloccate === true,
+    motivo: row.value.motivo || null,
+    timestamp: row.value.timestamp || null
+  };
+}
+
+// ========================================
 // STORICO
 // ========================================
 
@@ -2744,5 +2790,6 @@ module.exports = {
   registraAvanzamento,
 
   // Kill switch
-  bloccaSistema, sbloccaSistema, isSistemaBlocato, getStatoBlocco
+  bloccaSistema, sbloccaSistema, isSistemaBlocato, getStatoBlocco,
+  bloccaDonazioni, riattivaDonazioni, getStatoBloccoDonazioni
 };

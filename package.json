@@ -29,7 +29,8 @@
     "test:entry-rollover": "node scripts/test-entry-rollover-100.js",
     "test:registry-v3": "node scripts/test-pharaoh-registry-v3.js",
     "test:rog-rha-registration": "node scripts/test-rog-rha-registration.js",
-    "test:direct-rog-external": "node scripts/test-direct-rog-external-gate.js"
+    "test:direct-rog-external": "node scripts/test-direct-rog-external-gate.js",
+    "test:donation-kill-switch": "node scripts/test-donation-kill-switch-static.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
