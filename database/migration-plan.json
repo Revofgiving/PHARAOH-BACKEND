@@ -140,19 +140,7 @@
       "id": "0022_cassa_posizione_completa",
       "description": "Cassa PHARAOH come posizione ENTRATA completa: account autonomo, numero posizionale, sdoppiamento, progressione, Funzioni e doni; riconciliazione live delle Casse gia inserite",
       "file": "database/0022_cassa_posizione_completa.sql",
-      "sha256": "b7dfda8ac258a97107678988f728011298aee5c2a508ca5c0d699734fbf3493d"
-    },
-    {
-      "id": "0023_direct_rog_wallet_eligibility_60m",
-      "description": "DIRECT: stato ricostruibile dal wallet, HUMAN ROG monouso, finestra 60 minuti da completamento HUMAN e doppia autorizzazione pre-pagamento",
-      "file": "database/0023_direct_rog_wallet_eligibility_60m.sql",
-      "sha256": "c7660ba81c8a1d5305f686e4f563aea797fb80666f491486af919dd67b561219"
-    },
-    {
-      "id": "0024_gift_smartbox_activation",
-      "description": "Carta Regalo Smartbox: 102 USDC prepagati, codice monouso, Community beneficiario entro 3 mesi e fallback automatico al regalante",
-      "file": "database/0024_gift_smartbox_activation.sql",
-      "sha256": "dc22a705924c5d0da3cc7736cbc741d214a18da7eefb5f54927a34167a9c489a"
+      "sha256": "1e78baf17ebe367332ed99254605b045d13831c57727cd9bda44ef91da86327f"
     }
   ]
 }
