@@ -132,6 +132,7 @@ BEGIN
     FROM tavole t
     LEFT JOIN posizioni p
       ON p.account_id = t.faraone_account_id
+     AND p.sdoppiamento_tavola_id = t.id
      AND p.numero_posizionale IS NOT NULL
     LEFT JOIN tavole pt ON pt.id = p.tavola_id
     WHERE t.sezione = 'ENTRATA'
@@ -162,6 +163,7 @@ WHERE t.sezione = 'ENTRATA'
   AND t.tipo = 'SDOPPIAMENTO'
   AND t.status = 'APERTA'
   AND t.faraone_account_id = p.account_id
+  AND p.sdoppiamento_tavola_id = t.id
   AND pt.sezione = 'ENTRATA'
   AND pt.livello = 0
   AND p.numero_posizionale IS NOT NULL;
