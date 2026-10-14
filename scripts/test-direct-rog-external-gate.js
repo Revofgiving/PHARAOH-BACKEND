@@ -30,9 +30,14 @@ function baseRow(overrides = {}) {
     rog_donation_id: '123',
     rog_payment_confirmed_at: new Date().toISOString(),
     rog_confirmed_at: new Date().toISOString(),
+    rog_eligibility_source: sessionsModule.DIRECT_ROG_PROTOCOL,
+    rog_eligibility_completed_at: new Date().toISOString(),
+    rog_eligibility_expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    rog_claimed_at: new Date().toISOString(),
+    rog_claim_expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
     rog_proof: {
-      usdc: { txHash: usdc, wallet, amountUsdc: 2, blockNumber: 100 },
-      registration: { txHash: register, donor: wallet, donationId: '123', blockNumber: 101 }
+      usdc: { txHash: usdc, wallet, amountUsdc: 2, blockNumber: 100, blockTimestamp: Math.floor(Date.now() / 1000) },
+      registration: { txHash: register, donor: wallet, donationId: '123', blockNumber: 101, blockTimestamp: Math.floor(Date.now() / 1000) }
     },
     rog_fulfillment_status: 'COMPLETED',
     rog_human_position: 77,
@@ -44,11 +49,16 @@ function baseRow(overrides = {}) {
 function deps(row) {
   return {
     sessions: {
+      DIRECT_ROG_PROTOCOL: sessionsModule.DIRECT_ROG_PROTOCOL,
       normalizeWallet: v => String(v).toLowerCase(),
       requireSession: async () => row,
-      publicSession: r => ({ status: r.status, rogFulfillmentStatus: r.rog_fulfillment_status, rogHumanPosition: r.rog_human_position })
+      publicSession: r => ({ status: r.status, rogFulfillmentStatus: r.rog_fulfillment_status, rogHumanPosition: r.rog_human_position }),
+      asJsonObject: sessionsModule.asJsonObject
     },
-    community: { assertCommunityMember: async () => true }
+    eligibility: {
+      assertClaimReady: async () => ({ alreadyCompleted: false, rogHumanPosition: Number(row.rog_human_position) || null, session: row })
+    },
+    community: { assertCommunityMember: async () => true, _rogRequest: async () => ({ success: true, posizioni: [] }) }
   };
 }
 
@@ -90,6 +100,14 @@ async function testGateAcceptsCompletedHuman() {
   assert.equal(result.alreadyCompleted, false);
   assert.equal(result.rogFulfillmentPending, false);
   assert.equal(result.rogHumanPosition, 77);
+}
+
+async function testGateRejectsHistoricalWalletDiscoveredHuman() {
+  const row = baseRow({ rog_eligibility_source: 'ROG_POSITION_API' });
+  await assert.rejects(
+    () => direct.assertReadyForPharaoh({ wallet, sessionRef }, deps(row)),
+    e => e && e.code === 'DIRECT_FRESH_ROG_CYCLE_REQUIRED'
+  );
 }
 
 async function testPositionVerifyMatchesAuthoritativeSessionAndRog() {
@@ -139,6 +157,7 @@ async function testRecordCompletedRejectsMissingHuman() {
   await testGateRejectsProcessingWithoutHuman();
   await testGateRejectsMissingRegistrationProof();
   await testGateAcceptsCompletedHuman();
+  await testGateRejectsHistoricalWalletDiscoveredHuman();
   await testPositionVerifyMatchesAuthoritativeSessionAndRog();
   await testPositionVerifyRejectsDifferentPosition();
   await testRecordCompletedRejectsMissingHuman();

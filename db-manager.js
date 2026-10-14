@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS identita_funzioni (
   identity_key TEXT NOT NULL UNIQUE,
   wallet_proprietario TEXT NOT NULL,
   account_origine_wallet TEXT NOT NULL,
+  account_origine_id BIGINT REFERENCES accounts(id),
+  account_generato_id BIGINT REFERENCES accounts(id),
   tipo TEXT NOT NULL
     CHECK (tipo IN ('PERPETUO','GEMELLO','SIMBIONTE')),
   sigla TEXT NOT NULL,
@@ -46,6 +48,10 @@ CREATE TABLE IF NOT EXISTS identita_funzioni (
     CHECK (status IN ('ATTIVA', 'SOSPESA', 'CHIUSA')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE identita_funzioni
+  ADD COLUMN IF NOT EXISTS account_origine_id BIGINT REFERENCES accounts(id),
+  ADD COLUMN IF NOT EXISTS account_generato_id BIGINT REFERENCES accounts(id);
 
 ALTER TABLE identita_funzioni
   ALTER COLUMN progressivo TYPE BIGINT;
@@ -67,12 +73,19 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_identita_funzioni_wallet
   ON identita_funzioni(wallet_proprietario);
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_identita_funzioni_progressivo
-  ON identita_funzioni (
-    wallet_proprietario,
-    tipo,
-    progressivo
-  );
+DROP INDEX IF EXISTS uq_identita_funzioni_progressivo;
+
+CREATE INDEX IF NOT EXISTS idx_identita_funzioni_account_origine
+  ON identita_funzioni(account_origine_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_identita_funzioni_simbionte_progressivo
+  ON identita_funzioni(wallet_proprietario, progressivo)
+  WHERE tipo = 'SIMBIONTE';
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_identita_funzioni_secondari_progressivo
+  ON identita_funzioni(account_origine_id, tipo, progressivo)
+  WHERE tipo IN ('PERPETUO','GEMELLO')
+    AND account_origine_id IS NOT NULL;
 
 -- Tavole (numero sequenziale indipendente per sezione)
 CREATE TABLE IF NOT EXISTS tavole (
@@ -584,6 +597,15 @@ CREATE TABLE IF NOT EXISTS entry_rollovers (
 );
 CREATE INDEX IF NOT EXISTS idx_entry_rollovers_target_turno ON entry_rollovers(target_turno);
 
+CREATE TABLE IF NOT EXISTS entry_position_counter (
+  id SMALLINT PRIMARY KEY CHECK (id = 1),
+  last_issued BIGINT NOT NULL DEFAULT 0 CHECK (last_issued >= 0),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO entry_position_counter (id, last_issued)
+VALUES (1, COALESCE((SELECT MAX(numero_posizionale) FROM posizioni WHERE numero_posizionale IS NOT NULL), 0))
+ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO state_persistence (key, value)
 VALUES ('sistema_blocco', '{"bloccato": false}')
 ON CONFLICT (key) DO NOTHING;
@@ -596,6 +618,7 @@ ON CONFLICT (key) DO NOTHING;
 let initialized = false;
 
 async function initDatabase() {
+  require('./ops/v4-release-gate').assertReleaseAllowed();
   if (initialized) return;
 
   console.log('🏛️  Inizializzazione database PHARAOH...');
@@ -745,7 +768,7 @@ async function createPostCommitOperation({
   wallet = null,
   payload = {}
 }, client = null) {
-  await initDatabase();
+  if (!client) await initDatabase();
   if (!eventKey || typeof eventKey !== 'string' || !eventKey.trim()) {
     throw new Error('eventKey obbligatorio');
   }
@@ -797,7 +820,7 @@ async function createPostCommitOperation({
 }
 
 async function getPostCommitOperationByEventKey(eventKey, client = null) {
-  await initDatabase();
+  if (!client) await initDatabase();
   if (!eventKey || typeof eventKey !== 'string' || !eventKey.trim()) return null;
   const eventKeyNormalizzato = eventKey.trim();
   const sql = 'SELECT * FROM post_commit_operations WHERE event_key = $1';
@@ -807,7 +830,7 @@ async function getPostCommitOperationByEventKey(eventKey, client = null) {
 }
 
 async function markPostCommitOperationInProgress(eventKey, client = null) {
-  await initDatabase();
+  if (!client) await initDatabase();
   if (!eventKey || typeof eventKey !== 'string' || !eventKey.trim()) return null;
   const eventKeyNormalizzato = eventKey.trim();
   const sql = `UPDATE post_commit_operations
@@ -825,7 +848,7 @@ async function markPostCommitOperationInProgress(eventKey, client = null) {
 }
 
 async function markPostCommitOperationCompleted(eventKey, client = null) {
-  await initDatabase();
+  if (!client) await initDatabase();
   if (!eventKey || typeof eventKey !== 'string' || !eventKey.trim()) return null;
   const eventKeyNormalizzato = eventKey.trim();
   const sql = `UPDATE post_commit_operations
@@ -841,7 +864,7 @@ async function markPostCommitOperationCompleted(eventKey, client = null) {
 }
 
 async function markPostCommitOperationFailed(eventKey, errorMessage, client = null) {
-  await initDatabase();
+  if (!client) await initDatabase();
   if (!eventKey || typeof eventKey !== 'string' || !eventKey.trim()) return null;
   const eventKeyNormalizzato = eventKey.trim();
   const sql = `UPDATE post_commit_operations
@@ -856,7 +879,7 @@ async function markPostCommitOperationFailed(eventKey, errorMessage, client = nu
 }
 
 async function listRecoverablePostCommitOperations(limit = 100, client = null) {
-  await initDatabase();
+  if (!client) await initDatabase();
   let limitValue = Number(limit);
   if (!Number.isFinite(limitValue)) {
     limitValue = 100;
@@ -952,6 +975,144 @@ const NUMERO_POSIZIONALE_ADVISORY_LOCK_KEY = 42801;
 
 async function lockNumeroPosizionaleAllocation(client) {
   await client.query('SELECT pg_advisory_xact_lock($1) AS locked', [NUMERO_POSIZIONALE_ADVISORY_LOCK_KEY]);
+}
+
+async function isEntryNumeroPosizionaleReserved(client, numeroPosizionale) {
+  const numero = Number(numeroPosizionale);
+  if (!Number.isInteger(numero) || numero < 1) return true;
+
+  // Reg.10: i numeri 26, 40, 54, 68... sono riservati ai Gemelli
+  // anche prima che la relativa Funzione venga materializzata nel database.
+  if (isNumeroPosizionaleGemello(numero)) return true;
+
+  const row = (await client.query(
+    `SELECT (
+       EXISTS (
+         SELECT 1 FROM prenotazioni_funzioni pf
+         WHERE pf.numero_posizionale = $1
+           AND pf.stato IN ('RESERVED','MATERIALIZED','CONSUMED')
+       )
+       OR EXISTS (
+         SELECT 1 FROM funzioni f
+         WHERE f.numero_posizionale_prenotato = $1
+           AND f.status IN ('RILASCIATO','POSIZIONATO','USATO','COMPLETATO')
+       )
+     ) AS reserved`,
+    [numero]
+  )).rows[0] || null;
+  return Boolean(row?.reserved);
+}
+
+/**
+ * Assegna il prossimo numero posizionale GLOBALE del movimento ENTRATA.
+ *
+ * Regola definitiva 01/10/2026:
+ * - il progressivo e indipendente da tavola/casella;
+ * - cresce monotonicamente da 1 a infinito;
+ * - i numeri riservati alle Funzioni/Gemelli consumano il progressivo ma non
+ *   una casella fisica della tavola ENTRATA;
+ * - CASSA e HUMAN usano lo stesso allocatore globale;
+ * - l'advisory lock transazionale impedisce due assegnazioni concorrenti.
+ */
+async function allocateNextEntryNumeroPosizionale(client) {
+  if (!client || typeof client.query !== 'function') {
+    throw new Error('Client transazionale obbligatorio per il numero posizionale ENTRATA');
+  }
+
+  await lockNumeroPosizionaleAllocation(client);
+
+  await client.query(
+    `INSERT INTO entry_position_counter (id, last_issued)
+     VALUES (1, COALESCE((
+       SELECT MAX(p.numero_posizionale)
+       FROM posizioni p
+       JOIN tavole t ON t.id = p.tavola_id
+       WHERE t.sezione = 'ENTRATA'
+         AND t.livello = 0
+         AND p.numero_posizionale IS NOT NULL
+     ), 0))
+     ON CONFLICT (id) DO NOTHING`
+  );
+
+  const counter = (await client.query(
+    `SELECT
+       c.last_issued,
+       GREATEST(
+         c.last_issued,
+         COALESCE((
+           SELECT MAX(p.numero_posizionale)
+           FROM posizioni p
+           JOIN tavole t ON t.id = p.tavola_id
+           WHERE t.sezione = 'ENTRATA'
+             AND t.livello = 0
+             AND p.numero_posizionale IS NOT NULL
+         ), 0)
+       ) AS effective_last_issued
+     FROM entry_position_counter c
+     WHERE c.id = 1
+     FOR UPDATE`
+  )).rows[0] || { last_issued: 0, effective_last_issued: 0 };
+
+  const effectiveLastIssued = Number(counter.effective_last_issued || counter.last_issued || 0);
+  if (effectiveLastIssued !== Number(counter.last_issued || 0)) {
+    await client.query(
+      `UPDATE entry_position_counter
+       SET last_issued = $1, updated_at = NOW()
+       WHERE id = 1`,
+      [effectiveLastIssued]
+    );
+  }
+
+  let candidate = effectiveLastIssued + 1;
+  if (!Number.isInteger(candidate) || candidate < 1) candidate = 1;
+
+  for (;;) {
+    const occupiedRow = (await client.query(
+      `SELECT (
+         EXISTS (SELECT 1 FROM posizioni WHERE numero_posizionale = $1)
+         OR EXISTS (SELECT 1 FROM accounts WHERE numero_posizionale = $1)
+       ) AS occupied`,
+      [candidate]
+    )).rows[0] || null;
+
+    const occupied = Boolean(occupiedRow?.occupied);
+    const reserved = await isEntryNumeroPosizionaleReserved(client, candidate);
+    if (!occupied && !reserved) break;
+    candidate += 1;
+  }
+
+  await client.query(
+    `UPDATE entry_position_counter
+     SET last_issued = $1, updated_at = NOW()
+     WHERE id = 1`,
+    [candidate]
+  );
+
+  return candidate;
+}
+
+async function assertEntryNumeroPosizionaleAssignable(client, numeroPosizionale) {
+  if (!client || typeof client.query !== 'function') {
+    throw new Error('Client transazionale obbligatorio per il numero posizionale ENTRATA');
+  }
+  const numero = Number(numeroPosizionale);
+  if (!Number.isInteger(numero) || numero < 1) {
+    throw new Error(`Numero posizionale ENTRATA non valido: ${numeroPosizionale}`);
+  }
+  if (await isEntryNumeroPosizionaleReserved(client, numero)) {
+    throw new Error(`Numero posizionale ENTRATA ${numero} riservato a una Funzione`);
+  }
+  const row = (await client.query(
+    `SELECT (
+       EXISTS (SELECT 1 FROM posizioni WHERE numero_posizionale = $1)
+       OR EXISTS (SELECT 1 FROM accounts WHERE numero_posizionale = $1)
+     ) AS occupied`,
+    [numero]
+  )).rows[0] || null;
+  if (row?.occupied) {
+    throw new Error(`Numero posizionale ENTRATA ${numero} gia occupato`);
+  }
+  return numero;
 }
 
 async function getAccountForUpdate(client, wallet) {
@@ -1398,35 +1559,43 @@ async function countPosizioniInTavola(tavolaId, client = null) {
 // POSIZIONI
 // ========================================
 
-async function createPosizione({ tavolaId, casella, wallet, nome, tipo, donoImporto = 0, accountId = null, accountSigla = null }, client = null) {
+async function createPosizione({ tavolaId, casella, wallet, nome, tipo, donoImporto = 0, accountId = null, accountSigla = null, numeroPosizionale = null }, client = null) {
   if (!client) {
     await initDatabase();
   }
-  if (client) {
-    const result = await client.query(
-      `INSERT INTO posizioni (tavola_id, casella, wallet, nome, tipo, dono_importo, account_id, account_sigla, numero_posizionale)
-       SELECT $1, $2, $3, $4, $5, $6, $7, $8,
-              CASE WHEN t.sezione = 'ENTRATA' AND t.livello = 0
-                   THEN (((t.numero - 1) * 6) + $2)::bigint
-                   ELSE NULL END
-       FROM tavole t
-       WHERE t.id = $1
-       RETURNING *`,
-      [tavolaId, casella, wallet.toLowerCase(), nome, tipo, donoImporto, accountId, accountSigla]
-    );
-    return result.rows[0] || null;
-  }
-  return await pg.queryOne(
-    `INSERT INTO posizioni (tavola_id, casella, wallet, nome, tipo, dono_importo, account_id, account_sigla, numero_posizionale)
-     SELECT $1, $2, $3, $4, $5, $6, $7, $8,
-            CASE WHEN t.sezione = 'ENTRATA' AND t.livello = 0
-                 THEN (((t.numero - 1) * 6) + $2)::bigint
-                 ELSE NULL END
-     FROM tavole t
-     WHERE t.id = $1
-     RETURNING *`,
-    [tavolaId, casella, wallet.toLowerCase(), nome, tipo, donoImporto, accountId, accountSigla]
+
+  const runner = client || pg;
+  const metaResult = await runner.query(
+    'SELECT sezione, livello FROM tavole WHERE id = $1 LIMIT 1',
+    [tavolaId]
   );
+  const meta = metaResult.rows?.[0] || metaResult?.[0] || null;
+  if (!meta) throw new Error(`Tavola ${tavolaId} non trovata`);
+
+  const isEntrata = meta.sezione === 'ENTRATA' && Number(meta.livello) === 0;
+  const numero = numeroPosizionale == null ? null : Number(numeroPosizionale);
+  if (isEntrata && (!Number.isInteger(numero) || numero < 1)) {
+    throw new Error('numero_posizionale globale obbligatorio per una posizione ENTRATA');
+  }
+
+  if (tipo === 'CONTINUITA_RHA') {
+    if (wallet != null || accountId != null || accountSigla != null || numeroPosizionale != null || Number(meta.livello) !== 3 || Number(casella) !== 2 || Number(donoImporto) !== 500) {
+      throw new Error('CONTINUITY_NON_GENEALOGICAL_IDENTITY_REQUIRED');
+    }
+  } else if (typeof wallet !== 'string' || !wallet) throw new Error('POSITION_WALLET_REQUIRED');
+
+  const sql = `INSERT INTO posizioni (
+      tavola_id, casella, wallet, nome, tipo, dono_importo,
+      account_id, account_sigla, numero_posizionale
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    RETURNING *`;
+  const params = [
+    tavolaId, casella, wallet == null ? null : wallet.toLowerCase(), nome, tipo, donoImporto,
+    accountId, accountSigla, isEntrata ? numero : null
+  ];
+
+  if (client) return (await client.query(sql, params)).rows[0] || null;
+  return await pg.queryOne(sql, params);
 }
 
 async function getPosizioniTavola(tavolaId, client = null) {
@@ -1434,6 +1603,14 @@ async function getPosizioniTavola(tavolaId, client = null) {
   const sql = 'SELECT * FROM posizioni WHERE tavola_id = $1 ORDER BY casella ASC';
   const params = [tavolaId];
   return client ? (await client.query(sql, params)).rows : await pg.queryMany(sql, params);
+}
+
+async function getPosizioneById(posizioneId, client = null) {
+  if (!client) await initDatabase();
+  const id = Number(posizioneId);
+  if (!Number.isInteger(id) || id < 1) return null;
+  const sql = 'SELECT * FROM posizioni WHERE id = $1 LIMIT 1';
+  return client ? (await client.query(sql, [id])).rows[0] || null : await pg.queryOne(sql, [id]);
 }
 
 async function updatePosizioneSdoppiamento(posizioneId, sdoppiamentoTavolaId, client = null) {
@@ -1740,6 +1917,8 @@ async function createIdentitaFunzione({
   identityKey,
   walletProprietario,
   accountOrigineWallet,
+  accountOrigineId = null,
+  accountGeneratoId = null,
   tipo,
   sigla,
   progressivo
@@ -1765,6 +1944,18 @@ async function createIdentitaFunzione({
 
   if (typeof sigla !== 'string' || !sigla.trim()) {
     throw new Error('sigla non valida');
+  }
+
+  const normalizeOptionalAccountId = (value, label) => {
+    if (value === null || value === undefined) return null;
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${label} non valido`);
+    return parsed;
+  };
+  const origineIdDb = normalizeOptionalAccountId(accountOrigineId, 'accountOrigineId');
+  const generatoIdDb = normalizeOptionalAccountId(accountGeneratoId, 'accountGeneratoId');
+  if (['PERPETUO', 'GEMELLO'].includes(tipo) && !origineIdDb) {
+    throw new Error('accountOrigineId richiesto per identità secondaria');
   }
 
   let progressivoNormalizzato;
@@ -1801,6 +1992,8 @@ async function createIdentitaFunzione({
   }
 
   const progressivoDb = progressivoNormalizzato.toString();
+  const walletProprietarioDb = walletProprietario.toLowerCase();
+  const accountOrigineWalletDb = accountOrigineWallet.toLowerCase();
   const dbClient = client || await pg.getClient();
   const shouldManageTx = !client;
   try {
@@ -1811,32 +2004,55 @@ async function createIdentitaFunzione({
       'SELECT pg_advisory_xact_lock($1)',
       [42802]
     );
-    const existingProgressivo = await dbClient.query(
+
+    const existingIdentity = await dbClient.query(
       `SELECT *
        FROM identita_funzioni
-       WHERE wallet_proprietario = $1
-         AND tipo = $2
-         AND progressivo = $3`,
-      [walletProprietario.toLowerCase(), tipo, progressivoDb]
+       WHERE identity_key = $1`,
+      [identityKey]
     );
-    const existingProgressivoRow = existingProgressivo.rows[0];
-
-    if (existingProgressivoRow) {
-      const sameProgressivoMatch =
-        existingProgressivoRow.identity_key === identityKey &&
-        existingProgressivoRow.account_origine_wallet ===
-          accountOrigineWallet.toLowerCase() &&
-        existingProgressivoRow.sigla === sigla;
-
-      if (sameProgressivoMatch) {
-        if (shouldManageTx) {
-          await dbClient.query('COMMIT');
-        }
-        return existingProgressivoRow;
+    const existingIdentityRow = existingIdentity.rows[0];
+    if (existingIdentityRow) {
+      const sameIdentity =
+        existingIdentityRow.wallet_proprietario === walletProprietarioDb &&
+        existingIdentityRow.account_origine_wallet === accountOrigineWalletDb &&
+        Number(existingIdentityRow.account_origine_id || 0) === Number(origineIdDb || 0) &&
+        Number(existingIdentityRow.account_generato_id || 0) === Number(generatoIdDb || 0) &&
+        existingIdentityRow.tipo === tipo &&
+        existingIdentityRow.sigla === sigla &&
+        String(existingIdentityRow.progressivo) === progressivoDb;
+      if (!sameIdentity) {
+        throw new Error('identity_key già usata con dati differenti');
       }
+      if (shouldManageTx) await dbClient.query('COMMIT');
+      return existingIdentityRow;
+    }
 
+    let slotResult;
+    if (tipo === 'SIMBIONTE') {
+      slotResult = await dbClient.query(
+        `SELECT *
+         FROM identita_funzioni
+         WHERE wallet_proprietario = $1
+           AND tipo = 'SIMBIONTE'
+           AND progressivo = $2`,
+        [walletProprietarioDb, progressivoDb]
+      );
+    } else {
+      slotResult = await dbClient.query(
+        `SELECT *
+         FROM identita_funzioni
+         WHERE account_origine_id = $1
+           AND tipo = $2
+           AND progressivo = $3`,
+        [origineIdDb, tipo, progressivoDb]
+      );
+    }
+    if (slotResult.rows[0]) {
       throw new Error(
-        'Progressivo già assegnato a un’altra identità funzionale per questo wallet e tipo'
+        tipo === 'SIMBIONTE'
+          ? 'Progressivo Simbionte già assegnato per questo wallet'
+          : 'Progressivo secondario già assegnato per questo account origine e tipo'
       );
     }
 
@@ -1845,53 +2061,32 @@ async function createIdentitaFunzione({
         identity_key,
         wallet_proprietario,
         account_origine_wallet,
+        account_origine_id,
+        account_generato_id,
         tipo,
         sigla,
         progressivo
       )
-      VALUES ($1,$2,$3,$4,$5,$6)
-      ON CONFLICT (identity_key) DO NOTHING
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
       RETURNING *`,
       [
         identityKey,
-        walletProprietario.toLowerCase(),
-        accountOrigineWallet.toLowerCase(),
+        walletProprietarioDb,
+        accountOrigineWalletDb,
+        origineIdDb,
+        generatoIdDb,
         tipo,
         sigla,
         progressivoDb
       ]
     );
     const insertedRow = inserted.rows[0];
+    if (!insertedRow) throw new Error('identità funzionale non inserita');
 
-    if (insertedRow) {
-      if (shouldManageTx) {
-        await dbClient.query('COMMIT');
-      }
-      return insertedRow;
+    if (shouldManageTx) {
+      await dbClient.query('COMMIT');
     }
-    const existing = await dbClient.query(
-      `SELECT *
-       FROM identita_funzioni
-       WHERE identity_key = $1`,
-      [identityKey]
-    );
-    const existingRow = existing.rows[0];
-
-    const sameMatch = existingRow
-      && existingRow.wallet_proprietario === walletProprietario.toLowerCase()
-      && existingRow.account_origine_wallet === accountOrigineWallet.toLowerCase()
-      && existingRow.tipo === tipo
-      && existingRow.sigla === sigla
-      && String(existingRow.progressivo) === progressivoDb;
-
-    if (sameMatch) {
-      if (shouldManageTx) {
-        await dbClient.query('COMMIT');
-      }
-      return existingRow;
-    }
-
-    throw new Error('identity_key già usata con dati differenti');
+    return insertedRow;
   } catch (error) {
     if (shouldManageTx) {
       await dbClient.query('ROLLBACK');
@@ -2747,14 +2942,14 @@ module.exports = {
   initDatabase,
 
   // Accounts
-  createAccount, getAccount, getAccountsByWallet, getAccountById, getAccountByKey, getAccountByIdentity, updateAccountIdentity, assignNumeroPosizionale, assignNumeroPosizionaleToAccountId, assignSpecificNumeroPosizionale, assignNextGemelloNumeroPosizionale, assignNextGemelloNumeroPosizionaleToAccountId, getAccountByNumeroPosizionale, setAccountNumeroPosizionale,
+  createAccount, getAccount, getAccountsByWallet, getAccountById, getAccountByKey, getAccountByIdentity, updateAccountIdentity, assignNumeroPosizionale, assignNumeroPosizionaleToAccountId, assignSpecificNumeroPosizionale, assignNextGemelloNumeroPosizionale, assignNextGemelloNumeroPosizionaleToAccountId, getAccountByNumeroPosizionale, setAccountNumeroPosizionale, allocateNextEntryNumeroPosizionale, assertEntryNumeroPosizionaleAssignable,
 
   // Tavole
   getNextTavolaNumero, createTavola, getTavola, getTavolaById,
   updateTavolaStatus, updateTavolaDoni, countPosizioniInTavola,
 
   // Posizioni
-  createPosizione, getPosizioniTavola, updatePosizioneSdoppiamento, syncEntryPlacementIdentity,
+  createPosizione, getPosizioniTavola, getPosizioneById, updatePosizioneSdoppiamento, syncEntryPlacementIdentity,
   getEntryReservedSlots, shiftEntryFunctionReservationFromSlotOne, getEntryRolloverBySourceTable, createEntryRolloverAudit,
 
   // Turni

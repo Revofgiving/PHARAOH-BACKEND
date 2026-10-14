@@ -14,10 +14,13 @@ assert.ok(api.includes("/api/admin/donazioni/riattiva"), 'Manca endpoint admin r
 assert.ok(api.includes("/api/admin/donazioni/stato"), 'Manca endpoint admin stato donazioni');
 assert.ok(api.includes("/api/donazioni/stato"), 'Manca endpoint pubblico stato donazioni');
 assert.ok(api.includes("code: 'DONATIONS_BLOCKED'"), 'Manca errore canonico DONATIONS_BLOCKED');
-assert.ok(api.includes("path === '/api/donazione/diretta/session'"), 'DIRECT start non protetto');
+assert.ok(api.includes("path === '/api/donazione/diretta/authorize'"), 'DIRECT authorize non protetto');
+assert.ok(api.includes("path === '/api/donazione/diretta/session'"), 'DIRECT session non protetta');
 assert.ok(api.includes("path.startsWith('/api/donazione/diretta/rog/')"), 'DIRECT ROG non protetto');
 assert.ok(api.includes("path === '/api/donazione/entrata/wallet'"), 'Pagamento PHARAOH DIRECT non protetto');
-assert.ok(api.includes("path === '/api/gift/create'"), 'Gift create non protetto');
+assert.ok(api.includes("path === '/api/gift/smartbox/create'"), 'Smartbox create non protetto');
+assert.ok(api.includes("/api\\/gift\\/smartbox"), 'Smartbox payment routes non protette');
+assert.ok(!api.includes("path === '/api/gift/smartbox/redeem'"), 'Il riscatto di un regalo gia pagato non deve essere bloccato');
 assert.ok(api.includes("path === '/api/cross/donation/entrata'"), 'Cross entry non protetto');
 assert.ok(!api.includes("path.startsWith('/api/account')"), 'Le API account non devono essere bloccate dal donation switch');
 console.log('PASS donation kill switch static');

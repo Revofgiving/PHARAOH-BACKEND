@@ -1,0 +1,10 @@
+'use strict';
+const assert=require('node:assert/strict'),{validateTarget}=require('./rehearse-postgres-economy');
+const ACK='DISPOSABLE_EMPTY_DATABASE';
+assert.throws(()=>validateTarget({}),/ACK_REQUIRED/);
+assert.throws(()=>validateTarget({PHARAOH_DISPOSABLE_PG_ACK:ACK}),/TEST_DATABASE_REQUIRED/);
+for(const url of ['postgres://x:y@localhost/production','postgres://x:y@localhost/pharaoh_test_a','https://localhost/pharaoh_test_12345678','postgres://x:y@localhost/pharaoh_test_12345678?options=evil'])assert.throws(()=>validateTarget({PHARAOH_DISPOSABLE_PG_ACK:ACK,PHARAOH_TEST_DATABASE_URL:url}));
+const good='postgres://test:test@127.0.0.1/pharaoh_test_12345678';
+assert.equal(validateTarget({PHARAOH_DISPOSABLE_PG_ACK:ACK,PHARAOH_TEST_DATABASE_URL:good}),good);
+assert.throws(()=>validateTarget({PHARAOH_DISPOSABLE_PG_ACK:ACK,PHARAOH_TEST_DATABASE_URL:good,DATABASE_URL:good.replace('test:test','different:credentials')}),/APPLICATION_DATABASE_FORBIDDEN/);
+console.log('PG_REHEARSAL_GUARD_PASS: 8 pure guard assertions, zero connections, NOT the PostgreSQL rehearsal');

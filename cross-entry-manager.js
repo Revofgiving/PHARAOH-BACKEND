@@ -191,33 +191,23 @@ async function processUranusDonation(body, dependencies = {}) {
     }
 
     await client.query('BEGIN'); inTx = true;
+    await require('./economic-ledger').configuredLedger(client).ready();
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['PHARAOH:ENTRATA:POSIZIONAMENTO']);
     const duplicateTx = await client.query('SELECT id FROM donazioni WHERE LOWER(tx_hash)=$1 LIMIT 1', [payload.paymentTxHash]);
     if (duplicateTx.rows.length) throw makeError('Transazione cross gia consumata in donazioni', 'CROSS_TX_REPLAY', false, 409);
     const duplicateEvent = await client.query('SELECT id FROM donazioni WHERE source_platform=$1 AND source_event_key=$2 LIMIT 1', [SOURCE, payload.eventKey]);
     if (duplicateEvent.rows.length) throw makeError('Evento cross gia consumato in donazioni', 'CROSS_EVENT_REPLAY', false, 409);
 
-    const name = payload.beneficiaryName || `${payload.beneficiaryWallet.substring(0,8)}...`;
-    if (!await db.getAccount(payload.beneficiaryWallet, client)) await db.createAccount({ wallet: payload.beneficiaryWallet, nome: name, tipo: 'PRIMARIO' }, client);
-    const positions = []; const completedTables = [];
-    for (let i=0; i<payload.positionsExpected; i+=1) {
-      const turno = await db.getTurnoCorrente('ENTRATA', 0, client); if (!turno) throw makeError('Nessun turno Entrata attivo', 'CROSS_ENTRY_TURN_NOT_FOUND');
-      const tavola = await tableManager.getTavolaPercorsoAttiva(0, turno.numero_turno, client); if (!tavola) throw makeError('Nessuna tavola Entrata aperta', 'CROSS_ENTRY_TABLE_NOT_FOUND');
-      const placement = await tableManager.posizionaDonatore({ tavolaId: tavola.id, tavolaNumero: tavola.numero, livello: 0, wallet: payload.beneficiaryWallet, nome: name, tipo: 'DONATORE', donoImporto: 100, turno: turno.numero_turno, sdoppiabile: true, client });
-      await db.incrementSacerdotiEntrati(turno.id, client);
-      positions.push({ tavola: { id: tavola.id, numero: tavola.numero, casella: placement.casellaOccupata, completa: placement.tavolaCompleta }, tavolaPersonale: placement.tavolaSdoppiamento ? { numero: placement.tavolaSdoppiamento.numero } : null });
-      if (placement.tavolaCompleta) {
-        const eredeWallet = tavola.faraone_wallet; const eredeAccount = await db.getAccount(eredeWallet, client); const nomeErede = eredeAccount?.nome || String(eredeWallet).substring(0,10); const isFondo = eredeAccount?.tipo === 'FONDO'; const doniRicevuti = rules.IMPORTI.DONO_ENTRATA * 6; const batchContinues = i < payload.positionsExpected - 1; const postKey = `${payload.paymentTxHash}:USCITA_ENTRATA:TAVOLA:${tavola.id}`;
-        await db.createPostCommitOperation({ eventKey: postKey, operationType: 'USCITA_ENTRATA_POST_COMMIT', txHash: payload.paymentTxHash, sourceTavolaId: tavola.id, sourceTavolaNumero: tavola.numero, turnoId: turno.id, turnoNumero: turno.numero_turno, wallet: eredeWallet, payload: { nomeErede, isFondo, doniRicevuti, turnoEntrataAvviatoNelBatch: batchContinues } }, client);
-        if (batchContinues) await require('./donation-flow-manager').avviaNuovoTurnoEntrata(turno, client);
-        completedTables.push({ turno, tavola, eredeWallet, nomeErede, isFondo, doniRicevuti, turnoEntrataAvviatoNelBatch: batchContinues });
-      }
-    }
+    const economicFlow = require('./economic-flow');
+    const materialized = await economicFlow.configuredFlow(client).admitExternal({eventKey:payload.eventKey,
+      origin:SOURCE,payer:payload.paymentWallet,beneficiaryWallet:payload.beneficiaryWallet,
+      name:payload.beneficiaryName,count:payload.positionsExpected,txHash:payload.paymentTxHash,proof});
+    const positions = materialized.positions.map(economicFlow.publicPosition);
     await db.createDonazione({ donorWallet: payload.paymentWallet, importo: payload.amountUsdc, txHash: payload.paymentTxHash, tipo: 'DONO', destinatarioWallet: payload.destinationWallet, beneficiaryWallet: payload.beneficiaryWallet, sourcePlatform: SOURCE, sourceEventKey: payload.eventKey, positionsCreated: payload.positionsExpected, tavolaId: positions[0]?.tavola?.id || null, livello: 0, turno: null, blockchainProof: proof }, client);
     const result = { success: true, sourcePlatform: SOURCE, sourceEventKey: payload.eventKey, paymentWallet: payload.paymentWallet, beneficiaryWallet: payload.beneficiaryWallet, amountUsdc: payload.amountUsdc, numeroPosizioni: payload.positionsExpected, paymentTxHash: payload.paymentTxHash, positions };
     await client.query(`UPDATE cross_entry_events SET status='POSITION_ASSIGNED', position_result=$2::jsonb, completed_at=NOW(), updated_at=NOW(), last_error=NULL WHERE event_key=$1`, [payload.eventKey, JSON.stringify(result)]);
     await client.query('COMMIT'); inTx = false;
-    const postCommit = []; for (const completed of completedTables) postCommit.push(await processCompletedEntryTable({ completed, txHash: payload.paymentTxHash, client }));
+    const postCommit = []; // Durable FIFO economic worker owns completion.
     return { success: true, event: { ...payload, status: 'POSITION_ASSIGNED' }, result: { ...result, postCommit } };
   } catch (error) {
     flowError = error; if (inTx) try { await client.query('ROLLBACK'); } catch (_) {}

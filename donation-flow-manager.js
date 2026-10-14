@@ -260,6 +260,9 @@ async function inizializzaSistema() {
  * @returns {Object|null} Dettagli posizionamento, o null se fallback a container 5.2
  */
 async function posizionaSacerdoteInPharaoh(wallet, nome, client = null, accountIdentity = null) {
+  if (!client) throw new Error('PRIEST_TRANSACTION_REQUIRED');
+  const economic = require('./economic-flow').configuredFlow(client);
+  await economic.ledger.ready();
   const pg = require('./pg-connection-manager');
 
   const turno = await db.getTurnoCorrente('PHARAOH', 1, client);
@@ -290,6 +293,9 @@ async function posizionaSacerdoteInPharaoh(wallet, nome, client = null, accountI
     }
     return { isFaraone: true, wallet, turno: turno.numero_turno };
   }
+
+  await economic.fundPriest({accountId:accountInIngresso.id,turnId:turno.id,
+    fundingBucket:accountIdentity?.fundingBucket});
 
   // Trova tavola aperta cercando L1→L2→L3
   let tavolaAttiva = null;
@@ -557,10 +563,10 @@ async function _processaDonoEntrataWalletLocked({ wallet, txHash, sessionRef, no
   }
 
   let transactionBegun = false;
-  let completedTable = null;
   try {
     await client.query('BEGIN');
     transactionBegun = true;
+    await require('./economic-ledger').configuredLedger(client).ready();
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['PHARAOH:ENTRATA:POSIZIONAMENTO']);
 
     const existing = await client.query('SELECT id FROM donazioni WHERE LOWER(tx_hash) = $1 LIMIT 1', [verifiedHash]);
@@ -576,86 +582,15 @@ async function _processaDonoEntrataWalletLocked({ wallet, txHash, sessionRef, no
       throw error;
     }
 
-    let account = await db.getAccount(w, client);
-    if (!account) account = await db.createAccount({ wallet: w, nome: nomeEffettivo, tipo: 'PRIMARIO' }, client);
-
-    const turno = await db.getTurnoCorrente('ENTRATA', 0, client);
-    if (!turno) throw new Error('Nessun turno attivo al livello di entrata.');
-    const tavola = await tableManager.getTavolaPercorsoAttiva(0, turno.numero_turno, client);
-    if (!tavola) throw new Error('Nessuna tavola aperta al livello di entrata.');
-
-    const placement = await tableManager.posizionaDonatore({
-      tavolaId: tavola.id,
-      tavolaNumero: tavola.numero,
-      livello: 0,
-      wallet: w,
-      nome: nomeEffettivo,
-      tipo: 'DONATORE',
-      donoImporto: 100,
-      turno: turno.numero_turno,
-      sdoppiabile: true,
-      accountId: account.id,
-      accountSigla: account.sigla || null,
-      client
+    const economicFlow = require('./economic-flow');
+    const materialized = await economicFlow.configuredFlow(client).admitExternal({
+      eventKey: sessionRef, origin: 'DIRECT', payer: w, beneficiaryWallet: w,
+      name: nomeEffettivo, count: 1, txHash: verifiedHash, proof: blockchainProof
     });
-    account = await db.setAccountNumeroPosizionale(
-      account.id,
-      placement.numeroPosizionaleGlobale,
-      client,
-      { setSiglaIfNull: account.tipo === 'PRIMARIO' }
-    );
-    if (account.sigla) {
-      await db.syncEntryPlacementIdentity({
-        posizioneId: placement.posizione.id,
-        tavolaSdoppiamentoId: placement.tavolaSdoppiamento?.id || null,
-        accountId: account.id,
-        accountSigla: account.sigla
-      }, client);
-    }
-    await db.incrementSacerdotiEntrati(turno.id, client);
-
-    if (placement.tavolaCompleta) {
-      const eredeWallet = tavola.faraone_wallet;
-      const eredeAccount = tavola.faraone_account_id
-        ? await db.getAccountByIdentity({
-            accountId: tavola.faraone_account_id,
-            wallet: eredeWallet,
-            sigla: tavola.faraone_sigla || null
-          }, client)
-        : await db.getAccount(eredeWallet, client);
-      if (!eredeAccount) throw new Error(`Identita erede Entrata non risolta per tavola ${tavola.id}`);
-      const nomeErede = eredeAccount.nome || eredeWallet.substring(0, 10);
-      const isFondo = eredeAccount.tipo === 'FONDO';
-      const doniRicevuti = rules.IMPORTI.DONO_ENTRATA * 6;
-      const postCommitEventKey = `${verifiedHash}:USCITA_ENTRATA:TAVOLA:${tavola.id}`;
-      await db.createPostCommitOperation({
-        eventKey: postCommitEventKey,
-        operationType: 'USCITA_ENTRATA_POST_COMMIT',
-        txHash: verifiedHash,
-        sourceTavolaId: tavola.id,
-        sourceTavolaNumero: tavola.numero,
-        turnoId: turno.id,
-        turnoNumero: turno.numero_turno,
-        wallet: eredeWallet,
-        payload: {
-          nomeErede,
-          isFondo,
-          doniRicevuti,
-          turnoEntrataAvviatoNelBatch: false,
-          eredeAccountId: eredeAccount.id,
-          eredeAccountSigla: eredeAccount.sigla || null
-        }
-      }, client);
-      completedTable = {
-        turno, tavola, eredeWallet, nomeErede, isFondo, doniRicevuti,
-        eredeAccountId: eredeAccount.id, eredeAccountSigla: eredeAccount.sigla || null
-      };
-    }
-
-    const posizione = {
-      tavola: { id: tavola.id, numero: tavola.numero, casella: placement.casellaOccupata, completa: placement.tavolaCompleta },
-      tavolaPersonale: placement.tavolaSdoppiamento ? { numero: placement.tavolaSdoppiamento.numero } : null
-    };
+    const entry = materialized.positions[0];
+    const tavola = { id: entry.tableId, numero: entry.tableNumber };
+    const turno = { id: entry.turnId, numero_turno: entry.turnNumber };
+    const posizione = economicFlow.publicPosition(entry);
     const result = {
       success: true,
       sourcePlatform: 'DIRECT',
@@ -694,15 +629,7 @@ async function _processaDonoEntrataWalletLocked({ wallet, txHash, sessionRef, no
     await client.query('COMMIT');
     transactionBegun = false;
 
-    const trasferimentiSistema = [];
-    if (completedTable) {
-      const verifiedEntry = require('./verified-entry-manager');
-      trasferimentiSistema.push(await verifiedEntry._processCompletedEntryTable({
-        completed: completedTable,
-        txHash: verifiedHash,
-        client
-      }));
-    }
+    const trasferimentiSistema = []; // Recovered by the ordered economic worker.
     return { ...result, trasferimentiSistema };
   } catch (error) {
     if (transactionBegun) {
@@ -747,6 +674,8 @@ async function processaDonoEntrata() {
  *   e non nel turno 2) portando a un ordine errato.
  */
 async function avviaNuovoTurnoEntrata(turnoChiuso, client = null) {
+  if (!client) throw new Error('ENTRY_ADVANCE_TRANSACTION_REQUIRED');
+  await require('./economic-flow').configuredFlow(client).assertProjectsCapital();
   await db.completaTurno(turnoChiuso.id, rules.IMPORTI.DONO_ENTRATA * 6, client);
 
   const nuovoNumeroTurno = Number(turnoChiuso.numero_turno) + 1;
@@ -817,7 +746,7 @@ async function avviaNuovoTurnoEntrata(turnoChiuso, client = null) {
     sourceTavola,
     targetTavola: tavolaAttiva,
     targetTurno: nuovoNumeroTurno,
-    cassaWallet: CASSA_PHARAOH_WALLET,
+    cassaWallet: process.env.PHARAOH_PROJECTS_WALLET,
     client
   });
   // La Cassa e una posizione completa: conta tra i 6 occupanti del turno Entrata.
@@ -845,191 +774,11 @@ async function avviaNuovoTurnoEntrata(turnoChiuso, client = null) {
  * il Faraone esce dal livello 3 e si rilasciano le Funzioni.
  */
 async function processaDonoPharaoh() {
-  await db.initDatabase();
-  const pg = require('./pg-connection-manager');
-
-  // 1. Preleva sacerdote dal contenitore 5.2
-  const sacerdote = await containerManager.prelevaProssimo('5.2');
-  if (!sacerdote) {
-    return { success: false, error: 'Nessun sacerdote disponibile nel contenitore 5.2' };
-  }
-
-  // 2. Trova turno attivo Pharaoh (unico turno gestisce L1-L3)
-  const turno = await db.getTurnoCorrente('PHARAOH', 1);
-  if (!turno) {
-    return { success: false, error: 'Nessun turno attivo nel Sistema Pharaoh' };
-  }
-  const faraoneIdentity = identityFromTurno(turno);
-
-  // 3. Trova tavola PERCORSO aperta: cerca L1 → L2 → L3
-  let tavolaAttiva = null;
-  let livelloCorrente = null;
-
-  for (const liv of [1, 2, 3]) {
-    tavolaAttiva = liv === 2 && turno.numero_turno === 1
-      ? await tableManager.getTavolaPercorsoOperativaHorus(
-          turno.numero_turno
-        )
-      : liv === 3
-      ? await tableManager.getTavolaPercorsoOperativaRha(
-          turno.numero_turno
-        )
-      : await tableManager.getTavolaPercorsoAttiva(
-          liv,
-          turno.numero_turno
-        );
-
-    if (tavolaAttiva) {
-      livelloCorrente = liv;
-      break;
-    }
-  }
-
-  // Se nessuna tavola aperta, crea la prossima tavola del livello corretto.
-  // DISTRIBUZIONE CORRETTA (da documento):
-  //   L1 Anubis : sacerdoti 1-2   (entrati 0-1)  → 2 nuovi, poi PROGREDISCONO a Horus
-  //   L2 Horus  : sacerdoti 3-6   (entrati 2-5)  → 4 nuovi + 2 progrediti da Anubis = 6 totali
-  //   L3 Rha    : sacerdoti 7-18  (entrati 6-17) → 12 nuovi + 6 progrediti da Horus = 18 totali
-  if (!tavolaAttiva) {
-    const entrati = turno.sacerdoti_entrati;
-
-    if (entrati < 2) {
-      livelloCorrente = 1;  // Anubis
-    } else if (turno.numero_turno === 1 && entrati < 6) {
-      // Solo nel primo turno servono 4 nuovi sacerdoti umani a Horus.
-      livelloCorrente = 2;
-    } else {
-      // Dal secondo turno Horus è completato da:
-      // 4 Funzioni + 2 sacerdoti progrediti da Anubis.
-      livelloCorrente = 3;
-    }
-
-    tavolaAttiva = livelloCorrente === 2 && turno.numero_turno === 1
-      ? await tableManager.creaTavolaPercorsoOperativaHorus(
-          turno.faraone_wallet,
-          turno.numero_turno,
-          null,
-          faraoneIdentity
-        )
-      : livelloCorrente === 3
-      ? await tableManager.creaTavolaPercorsoOperativaRha(
-          turno.faraone_wallet,
-          turno.numero_turno,
-          null,
-          faraoneIdentity
-        )
-      : await tableManager.creaTavolaPercorso(
-          livelloCorrente,
-          turno.faraone_wallet,
-          turno.numero_turno,
-          null,
-          null,
-          faraoneIdentity
-        );
-  }
-
-  // 4. Posiziona sacerdote-donatore
-  const nome = sacerdote.nome || `#${sacerdote.numero_posizionale}`;
-  const risultato = await tableManager.posizionaDonatore({
-    tavolaId: tavolaAttiva.id,
-    tavolaNumero: tavolaAttiva.numero,
-    livello: livelloCorrente,
-    wallet: sacerdote.wallet,
-    nome,
-    tipo: 'DONATORE',
-    donoImporto: rules.IMPORTI.DONO_PHARAOH,
-    turno: turno.numero_turno,
-    sdoppiabile: true,
-    capacitaTavola: tavolaAttiva.capacita,
-    accountId: sacerdote.account_id || null,
-    accountSigla: sacerdote.account_sigla || null
-  });
-
-  // Protegge la casella 2 della settima tavola Rha:
-  // prima entra il sacerdote in casella 1, poi il Gemello prenotato.
-  if (livelloCorrente === 3) {
-    await inserisciGemelloPendente(turno.numero_turno);
-  }
-
-  await db.incrementSacerdotiEntrati(turno.id);
-
-  // 5. Ricalcola sacerdoti entrati aggiornato
-  const turnoAggiornato = await pg.queryOne('SELECT sacerdoti_entrati FROM turni WHERE id = $1', [turno.id]);
-  const entrati = Number(turnoAggiornato?.sacerdoti_entrati) || 0;
-
-  // 6. PROGRESSIONE SACERDOTI (i sacerdoti avanzano con il Faraone)
-  //
-  // Quando Anubis è completo (2° sacerdote entrato):
-  //   i 2 sacerdoti di Anubis progrediscono a Horus come PROGREDITO.
-  //   Risultato a Horus: 2 progrediti + 4 nuovi (sacerdoti 3-6) = 6 totali.
-  //
-  // Quando Horus è completo (6° sacerdote entrato):
-  //   i 6 sacerdoti di Horus (2 progrediti + 4 nuovi) progrediscono a Rha come PROGREDITO.
-  //   Risultato a Rha: 6 progrediti + 12 nuovi (sacerdoti 7-18) = 18 totali.
-
-  if (livelloCorrente === 1 && entrati === 2) {
-    // Anubis completato → progressione dei 2 sacerdoti verso Horus
-    console.log('\n   🏛️ ANUBIS COMPLETATO → progressione sacerdoti a Horus');
-    if (turno.numero_turno === 1) {
-      await tableManager.avanzaAnubisAHorusPrimoTurnoStrutturale(
-        turno.numero_turno,
-        turno.faraone_wallet,
-        null,
-        faraoneIdentity
-      );
-    } else {
-      await tableManager.avanzaSacerdotiAlLivello(
-        1, 2, turno.numero_turno, turno.faraone_wallet, null, faraoneIdentity
-      );
-    }
-
-    if (turno.numero_turno > 1) {
-      // Dopo la tavola principale Horus vengono materializzate
-      // le due tavole Horus delle Funzioni previste dall'Excel.
-      await materializzaFunzioniNelNuovoTurno(
-        turno,
-        turno.faraone_wallet
-      );
-
-      console.log('\n   🏛️ HORUS COMPLETATO → progressione a Rha');
-      await tableManager.avanzaHorusARhaStrutturale(
-        turno.numero_turno,
-        turno.faraone_wallet,
-        null,
-        faraoneIdentity
-      );
-    }
-  }
-
-  if (
-    turno.numero_turno === 1
-    && livelloCorrente === 2
-    && entrati === 6
-  ) {
-    // Primo turno: Horus si completa con 2 progrediti e 4 nuovi sacerdoti.
-    console.log('\n   🏛️ HORUS COMPLETATO → progressione sacerdoti a Rha');
-    await tableManager.avanzaHorusARhaStrutturale(
-      turno.numero_turno,
-      turno.faraone_wallet,
-      null,
-      faraoneIdentity
-    );
-  }
-
-  // 7. Se turno completato (18 sacerdoti totali) → Faraone esce da L3
-  if (entrati >= turno.sacerdoti_necessari) {
-    await gestisciUscitaFaraone(turno);
-  }
-
-  return {
-    success: true,
-    sacerdote: { wallet: sacerdote.wallet, numero_posizionale: sacerdote.numero_posizionale, nome },
-    livello: livelloCorrente,
-    tavola: { numero: tavolaAttiva.numero, completa: risultato.tavolaCompleta },
-    entrati,
-    necessari: turno.sacerdoti_necessari,
-    sdoppiamento: risultato.tavolaSdoppiamento ? { numero: risultato.tavolaSdoppiamento.numero } : null
-  };
+  // The former admin shortcut consumed container rows outside a transaction,
+  // bypassing the settled reserve and the durable S0 completion event.
+  // Only the funded FIFO post-commit worker may now advance a priest.
+  return {success:false,code:'LEGACY_UNFUNDED_PRIEST_FLOW_DISABLED',
+    error:'Usare il worker economico: avanzamento tramite evento S0 e riserva verificata.'};
 }
 
 // ========================================
@@ -1045,6 +794,8 @@ async function processaDonoPharaoh() {
  * All'uscita (reg.13): -10.000 per L5 -500 umanitari -500 per 5 rientri Entrata = 4.000 netto
  */
 async function posizionaFaraoneInL4(wallet, nome, client = null, accountIdentity = null) {
+  if (!client) throw new Error('SECONDARY_ENTRY_TRANSACTION_REQUIRED');
+  await require('./economic-ledger').configuredLedger(client).ready();
   const pg = require('./pg-connection-manager');
 
   const account = await resolveFlowAccount({
@@ -1080,6 +831,7 @@ async function posizionaFaraoneInL4(wallet, nome, client = null, accountIdentity
 
   console.log(`   ⛩️  Faraone Secondario ${account.sigla || account.id} → L4 THOT tavola #${tavola.numero}`);
 
+  await require('./economic-flow').configuredFlow(client).fundSecondaryEntry({accountId:account.id,turnId:turno.id,level:4});
   const risultato = await tableManager.posizionaDonatore({
     tavolaId:     tavola.id,
     tavolaNumero: tavola.numero,
@@ -1149,6 +901,7 @@ async function gestisciUscitaFaraoneL4(turno, client = null) {
 }
 
 async function gestisciUscitaFaraoneL4Atomica(turno, client) {
+  await require('./economic-ledger').configuredLedger(client).ready();
   if (!turno?.id) throw new Error('Turno Thot mancante o privo di id');
   const faraoneWallet = String(turno.faraone_wallet || '').toLowerCase();
   const eventKey = buildUscitaThotEventKey(turno, faraoneWallet);
@@ -1187,6 +940,9 @@ async function gestisciUscitaFaraoneL4Atomica(turno, client) {
   console.log(`   → 5 rientri Entrata    : ${uscita.trattenutaRientriEntrata}`);
   console.log(`   → Netto                : ${uscita.netto}`);
 
+  const economicFlow = require('./economic-flow').configuredFlow(client);
+  const economicExit = await economicFlow.planExit({level:'THOT',eventKey,turn:statoTurno,account});
+
   const thotAllocation = await functionManager.rilasciaFunzioniL4({
     faraoneWallet,
     faraoneAccountId: account.id,
@@ -1217,8 +973,11 @@ async function gestisciUscitaFaraoneL4Atomica(turno, client) {
     eventKey
   }, client);
 
+  if (economicExit.positionClass === 'PILETTA') {
+    await economicFlow.reinvestNet(economicExit);
+  } else {
   await payoutManager.createPendingGift({
-    wallet: faraoneWallet,
+    wallet: economicExit.beneficiaryWallet,
     accountId: account.id,
     accountSigla: account.sigla || null,
     importo: uscita.netto,
@@ -1226,9 +985,10 @@ async function gestisciUscitaFaraoneL4Atomica(turno, client) {
     tipoUscita: 'USCITA_L4',
     tipoAccount,
     turno: statoTurno.numero_turno,
-    dettagli: { uscita, thotAllocation },
+    dettagli: { uscita, thotAllocation, economicReserveBucket: economicExit.keys.NET },
     eventKey
   }, client);
+  }
 
   await db.completaTurno(statoTurno.id, doniRicevuti, client);
   await avviaNextTurnoL4(statoTurno, client);
@@ -1299,6 +1059,8 @@ async function avviaNextTurnoL4(turnoChiuso, client = null) {
  * All'uscita (reg.14): 5.000 in 50 rientri Entrata + 6.000 dono + 19.000 netto base = 25.000 payout
  */
 async function posizionaFaraoneInL5(wallet, nome, client = null, accountIdentity = null) {
+  if (!client) throw new Error('SECONDARY_ENTRY_TRANSACTION_REQUIRED');
+  await require('./economic-ledger').configuredLedger(client).ready();
   const pg = require('./pg-connection-manager');
 
   const account = await resolveFlowAccount({
@@ -1333,6 +1095,7 @@ async function posizionaFaraoneInL5(wallet, nome, client = null, accountIdentity
 
   console.log(`   🔱  Faraone Secondario ${account.sigla || account.id} → L5 ISIDE tavola #${tavola.numero}`);
 
+  await require('./economic-flow').configuredFlow(client).fundSecondaryEntry({accountId:account.id,turnId:turno.id,level:5});
   const risultato = await tableManager.posizionaDonatore({
     tavolaId:     tavola.id,
     tavolaNumero: tavola.numero,
@@ -1401,6 +1164,7 @@ async function gestisciUscitaFaraoneL5(turno, client = null) {
 }
 
 async function gestisciUscitaFaraoneL5Atomica(turno, client) {
+  await require('./economic-ledger').configuredLedger(client).ready();
   if (!turno?.id) throw new Error('Turno Iside mancante o privo di id');
   const faraoneWallet = String(turno.faraone_wallet || '').toLowerCase();
   const eventKey = buildUscitaIsideEventKey(turno, faraoneWallet);
@@ -1432,6 +1196,9 @@ async function gestisciUscitaFaraoneL5Atomica(turno, client) {
   console.log(`   Netto base  : ${uscita.nettoBase}`);
   console.log(`   Quota diretta: ${uscita.quotaRicevente}`);
   console.log(`   Payout      : ${uscita.payoutRicevente}`);
+
+  const economicFlow = require('./economic-flow').configuredFlow(client);
+  const economicExit = await economicFlow.planExit({level:'ISIDE',eventKey,turn:statoTurno,account});
 
   const isideAllocation = await functionManager.rilasciaFunzioniL5({
     faraoneWallet,
@@ -1469,8 +1236,11 @@ async function gestisciUscitaFaraoneL5Atomica(turno, client) {
     eventKey
   }, client);
 
+  if (economicExit.positionClass === 'PILETTA') {
+    await economicFlow.reinvestNet(economicExit);
+  } else {
   await payoutManager.createPendingGift({
-    wallet: faraoneWallet,
+    wallet: economicExit.beneficiaryWallet,
     accountId: account.id,
     accountSigla: account.sigla || null,
     importo: uscita.payoutRicevente,
@@ -1483,10 +1253,12 @@ async function gestisciUscitaFaraoneL5Atomica(turno, client) {
       nettoBaseUsdc: uscita.nettoBase,
       donoRiceventeUsdc: uscita.quotaRicevente,
       payoutTotaleUsdc: uscita.payoutRicevente,
-      isideAllocationEventKey: isideAllocation.eventKey
+      isideAllocationEventKey: isideAllocation.eventKey,
+      economicReserveBucket: economicExit.keys.NET
     },
     eventKey
   }, client);
+  }
 
   await db.completaTurno(statoTurno.id, doniRicevuti, client);
   await avviaNextTurnoL5(statoTurno, client);
@@ -1586,6 +1358,7 @@ async function gestisciUscitaFaraone(turno, client = null) {
 }
 
 async function gestisciUscitaFaraoneAtomica(turno, client) {
+  await require('./economic-ledger').configuredLedger(client).ready();
   if (!turno?.id) throw new Error('Turno Rha mancante o privo di id');
   const faraoneWallet = String(turno.faraone_wallet || '').toLowerCase();
   const eventKey = buildUscitaRhaEventKey(turno, faraoneWallet);
@@ -1634,6 +1407,9 @@ async function gestisciUscitaFaraoneAtomica(turno, client) {
   console.log(`   Trattenuta RHA (3.000€): ${uscita.trattenutaCassa} → include quota cross 500 (300 ROG + 200 URANUS)`);
   console.log(`   Netto Faraone: ${uscita.netto}`);
 
+  const economicFlow = require('./economic-flow').configuredFlow(client);
+  const economicExit = await economicFlow.planExit({level:'RHA',eventKey,turn:statoTurno,account});
+
   const funzioni = await functionManager.rilasciaFunzioniL3({
     faraoneWallet,
     faraoneAccountId: account.id,
@@ -1675,7 +1451,8 @@ async function gestisciUscitaFaraoneAtomica(turno, client) {
       funzioni: {
         simbionti: funzioni.simbionti.length,
         perpetuo: !!funzioni.perpetuo,
-        gemello: !!funzioni.gemello
+        gemello: !!funzioni.gemello,
+        continuitaRha: !!funzioni.continuita
       },
       rhaAllocation: crossMovements.allocation,
       crossMovements: crossMovements.operations
@@ -1683,8 +1460,11 @@ async function gestisciUscitaFaraoneAtomica(turno, client) {
     eventKey
   }, client);
 
+  if (economicExit.positionClass === 'PILETTA') {
+    await economicFlow.reinvestNet(economicExit);
+  } else {
   await payoutManager.createPendingGift({
-    wallet: faraoneWallet,
+    wallet: economicExit.beneficiaryWallet,
     accountId: account.id,
     accountSigla: sigla,
     importo: uscita.netto,
@@ -1692,9 +1472,10 @@ async function gestisciUscitaFaraoneAtomica(turno, client) {
     tipoUscita: 'USCITA_L3',
     tipoAccount,
     turno: statoTurno.numero_turno,
-    dettagli: { uscita },
+    dettagli: { uscita, economicReserveBucket: economicExit.keys.NET },
     eventKey
   }, client);
+  }
 
   if (uscita.passaAlL4) {
     console.log(`   ➡️  Secondario ${sigla}: passa a L4 Thot con ${uscita.trattenutaIngressoL4}€`);
@@ -1755,6 +1536,7 @@ async function materializzaPrenotazioneSuTavola({ prenotazione, tavola, livello,
       await dbClient.query('BEGIN');
     }
 
+    await require('./economic-ledger').configuredLedger(dbClient).ready();
     const locked = await dbClient.query(
       `SELECT * FROM prenotazioni_funzioni WHERE id = $1 FOR UPDATE`,
       [prenotazione.id]
@@ -1797,6 +1579,16 @@ async function materializzaPrenotazioneSuTavola({ prenotazione, tavola, livello,
     if (corrente.stato !== 'RESERVED') {
       throw new Error(`Prenotazione ${corrente.id} in stato ${corrente.stato}`);
     }
+
+    if (corrente.tipo_funzione === 'CONTINUITA_RHA') {
+      const position = await require('./continuity-manager').materialize({reservation:corrente,table:tavola,turnNumber:turnoNum},dbClient);
+      if (shouldManageTx) await dbClient.query('COMMIT');
+      return position;
+    }
+
+    const fundedTurn = (await dbClient.query("SELECT id FROM turni WHERE sezione='PHARAOH' AND livello=1 AND numero_turno=$1",[turnoNum])).rows[0];
+    const contribution = fundedTurn && await require('./economic-ledger').configuredLedger(dbClient).store.event(`FUNCTIONS_TO_B1:${fundedTurn.id}`);
+    if (!contribution || contribution.status !== 'COMPLETED') throw new Error('FUNCTIONS_SETTLED_TURN_FUNDING_REQUIRED');
 
     const funzioneRes = await dbClient.query(
       'SELECT * FROM funzioni WHERE id = $1',
@@ -1865,16 +1657,7 @@ async function materializzaPrenotazioneSuTavola({ prenotazione, tavola, livello,
         return posizioneEsistente.rows[0];
       }
 
-      await dbClient.query(
-        `UPDATE prenotazioni_funzioni
-         SET stato = 'ERROR', updated_at = NOW()
-         WHERE id = $1`,
-        [corrente.id]
-      );
-      if (shouldManageTx) {
-        await dbClient.query('COMMIT');
-      }
-      return null;
+      throw new Error(`FUNCTION_RESERVED_SLOT_CONFLICT:${corrente.id}`);
     }
 
     if (tipoFunzione === 'SIMBIONTE') {
@@ -2094,10 +1877,9 @@ async function inserisciGemelloPendente(turnoNum, client = null) {
   const casella2Occupata = client
     ? (await client.query(casellaSql, [settimaTavola.id])).rows[0] || null
     : await pg.queryOne(casellaSql, [settimaTavola.id]);
-  if (casella2Occupata) {
-    console.log(`   ⚠️  Casella 2 della 7ª tavola Rha #${settimaTavola.numero} già occupata — Gemello non inserito`);
-    return;
-  }
+  // Existing slots are validated by materializzaPrenotazioneSuTavola below;
+  // a conflict must fail closed rather than silently dropping the function.
+
 
   console.log(`\n⚙️ INSERIMENTO GEMELLO PRENOTATO → Rha tavola #${settimaTavola.numero} casella 2`);
 
@@ -2213,6 +1995,9 @@ async function avviaNuovoTurnoPharaoh(turnoChiuso, client = null) {
  *   Rha   tav.7 slot 2   = Gemello       (con sdoppiamento - futuro Faraone) [lazy]
  */
 async function materializzaFunzioniNelNuovoTurno(nuovoTurno, faraoneWallet, client = null) {
+  if (!client) throw new Error('FUNCTIONS_TRANSACTION_REQUIRED');
+  await require('./economic-flow').configuredFlow(client).fundFunctions({turnId:nuovoTurno.id,turnNumber:nuovoTurno.numero_turno});
+
   const faraoneIdentity = identityFromTurno(nuovoTurno);
   const prenotazioniHorus1 = await db.getPrenotazioniRiservate({
     turnoDestinazione: nuovoTurno.numero_turno,
@@ -2358,6 +2143,7 @@ async function recuperaOperazioniPostCommit(limit = 100) {
       client = await pg.getClient();
       await client.query('BEGIN');
       transactionBegun = true;
+      await require('./economic-ledger').configuredLedger(client).ready();
       await client.query(
         'SELECT pg_advisory_xact_lock(hashtext($1))',
         [eventKey]
@@ -2422,9 +2208,19 @@ async function recuperaOperazioniPostCommit(limit = 100) {
       }, client);
       const eredeIdentity = identityFromAccount(eredeAccount);
 
-      const trattenuta = rules.IMPORTI.TRATTENUTA_FONDO_ENTRATA;
+      const trattenuta = isFondo ? doniRicevuti : rules.IMPORTI.TRATTENUTA_FONDO_ENTRATA;
       const netto = doniRicevuti - trattenuta;
 
+      if (payload.economicModel !== 'V4') throw new Error('LEGACY_POST_COMMIT_CUTOVER_REVIEW_REQUIRED');
+      const economic = require('./economic-flow').configuredFlow(client);
+      const funding = await economic.prepareEntryCompletion({tableId:operazione.source_tavola_id,
+        tableNumber:operazione.source_tavola_numero,heir:eredeAccount,turnNumber:turno.numero_turno});
+      if (!funding.ready) {
+        await db.markPostCommitOperationFailed(eventKey, funding.reason, client);
+        await client.query('COMMIT'); transactionBegun = false;
+        risultati.push({eventKey,status:'WAITING_SETTLEMENT',reason:funding.reason});
+        break; // Preserve FIFO; later priests cannot overtake the bootstrap.
+      }
       if (isFondo) {
         await db.registraAvanzamento({
           wallet,
@@ -2456,7 +2252,7 @@ async function recuperaOperazioniPostCommit(limit = 100) {
           eventKey
         }, client);
       }
-      await posizionaSacerdoteInPharaoh(wallet, nomeErede, client, eredeIdentity);
+      await posizionaSacerdoteInPharaoh(wallet, nomeErede, client, {...eredeIdentity,fundingBucket:funding.fundingBucket});
       let rollover = null;
       if (!turnoEntrataAvviatoNelBatch) {
         const next = await avviaNuovoTurnoEntrata(turno, client);
@@ -2495,6 +2291,7 @@ async function recuperaOperazioniPostCommit(limit = 100) {
         status: 'FAILED',
         error: err?.message || String(err)
       });
+      break;
     } finally {
       if (client) {
         client.release();

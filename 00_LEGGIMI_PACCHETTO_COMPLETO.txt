@@ -1,0 +1,10 @@
+PHARAOH BACKEND V4 - RELEASE DEPLOYABLE - 13 OTTOBRE 2026
+
+STATO CORRENTE: DEPLOYABLE SOURCE PACKAGE
+REGISTRY: PHARAOH_TREASURY_REGISTRY_V4 / 4.0.0
+MIGRAZIONI: 28, nessuna 0029, storico preservato
+TEST RELEASE PRECEDENTE: 52/52 PASS; la correzione release-gate non altera la logica economica.
+
+IMPORTANTE: i documenti datati 8-9 ottobre che riportano NON DEPLOY sono evidenza storica di checkpoint precedenti e NON rappresentano lo stato corrente.
+
+LEGGERE: 00_DEPLOYABLE_RELEASE_README_13_OTTOBRE_2026.md

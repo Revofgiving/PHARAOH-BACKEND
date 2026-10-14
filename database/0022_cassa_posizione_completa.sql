@@ -124,6 +124,9 @@ BEGIN
 END $$;
 
 -- 5) Le tavole personali ENTRATA ancora APERTE devono seguire l'ordine reale delle posizioni.
+--    IDENTITA UNIVOCA: una tavola personale appartiene alla specifica posizione che la
+--    referenzia tramite posizioni.sdoppiamento_tavola_id. Non usare il solo account_id:
+--    lo stesso account puo avere piu posizioni ENTRATA e quindi piu tavole personali.
 --    Spostamento temporaneo evita collisioni sull'indice unico (sezione, numero).
 DO $$
 BEGIN
@@ -131,8 +134,7 @@ BEGIN
     SELECT 1
     FROM tavole t
     LEFT JOIN posizioni p
-      ON p.account_id = t.faraone_account_id
-     AND p.sdoppiamento_tavola_id = t.id
+      ON p.sdoppiamento_tavola_id = t.id
      AND p.numero_posizionale IS NOT NULL
     LEFT JOIN tavole pt ON pt.id = p.tavola_id
     WHERE t.sezione = 'ENTRATA'
@@ -162,7 +164,6 @@ WHERE t.sezione = 'ENTRATA'
   AND t.livello = 0
   AND t.tipo = 'SDOPPIAMENTO'
   AND t.status = 'APERTA'
-  AND t.faraone_account_id = p.account_id
   AND p.sdoppiamento_tavola_id = t.id
   AND pt.sezione = 'ENTRATA'
   AND pt.livello = 0

@@ -26,6 +26,8 @@ RUN npm ci --omit=dev && npm cache clean --force
 # Copia il codice sorgente (escludi .dockerignore)
 COPY --chown=node:node . .
 
+RUN node ops/v4-release-gate.js && node ops/deploy-preflight.js static
+
 # L'applicazione non necessita privilegi root a runtime.
 USER node
 
@@ -37,4 +39,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
   CMD node -e "require('http').get('http://localhost:' + (process.env.PORT||4000) + '/api/health', r => process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 
 # Applica in modo idempotente le migrazioni sotto advisory lock, poi avvia.
-CMD ["sh", "-c", "npm run db:migrate && exec node api-server.js"]
+CMD ["sh", "-c", "node ops/v4-release-gate.js && node ops/deploy-preflight.js production && node ops/integration-preflight.js && npm run db:migrate && exec node api-server.js"]

@@ -37,11 +37,13 @@ function getLivelloConfig(livello) {
 }
 
 /**
- * Numero posizionale assoluto del livello ENTRATA.
- * Ogni tavola occupa sempre un blocco fisso di 6 valori:
- * Tavola 1 = 1..6, Tavola 2 = 7..12, Tavola 3 = 13..18, ecc.
- * Il valore dipende esclusivamente da tavola + casella, quindi include anche
- * Cassa PHARAOH e Funzioni materializzate/prenotate.
+ * Mappa l'ordinale fisico ENTRATA (tavola/casella) sul progressivo globale
+ * saltando i numeri riservati ai Gemelli: 26, 40, 54, 68...
+ *
+ * IMPORTANTE: il runtime NON usa questa funzione per assegnare i numeri.
+ * L'assegnazione reale e transazionale e avviene in db-manager tramite
+ * allocateNextEntryNumeroPosizionale(), che considera anche le prenotazioni
+ * persistite. Questa funzione resta come riferimento deterministico/test.
  */
 function calcolaPosizioneGlobaleEntrata(tavolaNumero, casella) {
   const tavola = Number(tavolaNumero);
@@ -52,7 +54,16 @@ function calcolaPosizioneGlobaleEntrata(tavolaNumero, casella) {
   if (!Number.isInteger(slot) || slot < 1 || slot > 6) {
     throw new Error(`Casella Entrata non valida: ${casella}`);
   }
-  return ((tavola - 1) * 6) + slot;
+
+  const ordinal = ((tavola - 1) * 6) + slot;
+  let materializzate = 0;
+  let numero = 0;
+  while (materializzate < ordinal) {
+    numero += 1;
+    const riservatoGemello = numero >= 26 && (numero - 26) % 14 === 0;
+    if (!riservatoGemello) materializzate += 1;
+  }
+  return numero;
 }
 
 // ========================================
@@ -205,20 +216,17 @@ async function resolveCasellaDisponibile({
 
   const posizioni = await db.getPosizioniTavola(tavolaId, client);
   const occupateSet = new Set(posizioni.map(p => Number(p.casella)));
-  const riservate = await db.getEntryReservedSlots({
-    turnoNumero: turno,
-    tavolaNumero,
-    tavolaRelativa: 1
-  }, client);
-  const riservateSet = new Set(riservate.map(Number));
 
+  // Le prenotazioni Funzioni/Gemelli consumano il NUMERO POSIZIONALE globale,
+  // non una casella fisica ENTRATA. La tavola resta quindi composta da
+  // 6 posizioni materializzate: Tavola 1 = 6 HUMAN; Tavola 2+ = CASSA + 5 HUMAN.
   for (let casella = 1; casella <= Number(capacita); casella += 1) {
-    if (!occupateSet.has(casella) && !riservateSet.has(casella)) {
-      return { casella, occupate: occupateSet.size, riservate };
+    if (!occupateSet.has(casella)) {
+      return { casella, occupate: occupateSet.size, riservate: [] };
     }
   }
 
-  return { casella: null, occupate: occupateSet.size, riservate };
+  return { casella: null, occupate: occupateSet.size, riservate: [] };
 }
 
 /**
@@ -250,6 +258,7 @@ async function posizionaDonatore({
   accountId = null,
   accountSigla = null,
   casellaForzata = null,
+  numeroPosizionaleForzato = null,
   client = null
 }) {
   const config = getLivelloConfig(livello);
@@ -257,15 +266,6 @@ async function posizionaDonatore({
     Number(capacitaTavola) > 0
       ? Number(capacitaTavola)
       : config.capacita;
-  if (Number(livello) === 0 && tipo === 'CASSA' && Number(casellaForzata) === 1) {
-    await db.shiftEntryFunctionReservationFromSlotOne({
-      turnoNumero: turno,
-      tavolaNumero,
-      tavolaRelativa: 1,
-      tavolaId
-    }, client);
-  }
-
   let slot = await resolveCasellaDisponibile({
     tavolaId,
     tavolaNumero,
@@ -279,36 +279,40 @@ async function posizionaDonatore({
     const forced = Number(casellaForzata);
     const posizioni = await db.getPosizioniTavola(tavolaId, client);
     const occupied = new Set(posizioni.map(p => Number(p.casella)));
-    const riservate = Number(livello) === 0
-      ? await db.getEntryReservedSlots({ turnoNumero: turno, tavolaNumero, tavolaRelativa: 1 }, client)
-      : [];
     if (!Number.isInteger(forced) || forced < 1 || forced > capacitaEffettiva) {
       throw new Error(`Casella forzata non valida: ${casellaForzata}`);
     }
     if (occupied.has(forced)) throw new Error(`Tavola #${tavolaNumero}: casella ${forced} gia occupata`);
-    if (Number(livello) === 0 && riservate.includes(forced)) {
-      throw new Error(`Tavola Entrata #${tavolaNumero}: casella ${forced} ancora riservata a una Funzione`);
-    }
-    slot = { casella: forced, occupate: occupied.size, riservate };
+    slot = { casella: forced, occupate: occupied.size, riservate: [] };
   }
 
   const occupate = Number(slot.occupate) || 0;
   const casella = slot.casella;
 
   if (!Number.isInteger(casella) || casella < 1 || casella > capacitaEffettiva) {
-    if (Number(livello) === 0 && slot.riservate.length > 0 && occupate < capacitaEffettiva) {
-      throw new Error(
-        `Tavola Entrata #${tavolaNumero}: nessuna casella libera senza invadere ` +
-        `prenotazioni Funzioni (${slot.riservate.join(',')})`
-      );
-    }
     throw new Error(
       `Tavola #${tavolaNumero} piena ` +
       `(${occupate}/${capacitaEffettiva})`
     );
   }
 
-  // Inserisci posizione
+  let numeroPosizionaleGlobale = null;
+  if (Number(livello) === 0) {
+    if (!client) {
+      throw new Error('Client transazionale obbligatorio per il posizionamento ENTRATA');
+    }
+    if (numeroPosizionaleForzato !== null && numeroPosizionaleForzato !== undefined) {
+      numeroPosizionaleGlobale = await db.assertEntryNumeroPosizionaleAssignable(
+        client,
+        numeroPosizionaleForzato
+      );
+    } else {
+      numeroPosizionaleGlobale = await db.allocateNextEntryNumeroPosizionale(client);
+    }
+  }
+
+  // Inserisci posizione. In ENTRATA il numero globale e assegnato
+  // indipendentemente da tavola/casella e viene persistito nello stesso INSERT.
   const posizione = await db.createPosizione({
     tavolaId,
     casella,
@@ -317,7 +321,8 @@ async function posizionaDonatore({
     tipo,
     donoImporto,
     accountId,
-    accountSigla
+    accountSigla,
+    numeroPosizionale: numeroPosizionaleGlobale
   }, client);
 
   // Aggiorna totale doni ricevuti nella tavola
@@ -354,7 +359,7 @@ async function posizionaDonatore({
     tavolaCompleta,
     casellaOccupata: casella,
     numeroPosizionaleGlobale: Number(livello) === 0
-      ? calcolaPosizioneGlobaleEntrata(tavolaNumero, casella)
+      ? Number(posizione.numero_posizionale)
       : null,
     totaleCaselle: capacitaEffettiva
   };
@@ -366,7 +371,8 @@ async function posizionaDonatore({
  * Regola definitiva 29/09/2026:
  * - Tavola 1: 6 HUMAN.
  * - Dalla Tavola 2 in poi: casella 1 = nuova posizione CASSA PHARAOH da 100 USDC;
- *   caselle 2..6 = 5 HUMAN/Funzioni secondo le prenotazioni.
+ *   caselle 2..6 = 5 HUMAN. Le prenotazioni Funzioni consumano soltanto il
+ *   progressivo globale (es. 26,40,54...) e NON una casella fisica ENTRATA.
  * - La CASSA e una posizione completa del movimento: ha numero_posizionale,
  *   account_id autonomo, sigla, tavola personale di sdoppiamento, progredisce,
  *   puo generare Funzioni e puo ricevere doni come ogni altra posizione PRIMARIO.
@@ -388,26 +394,33 @@ async function materializzaCassaEntrata({
   const wallet = String(cassaWallet || '').trim().toLowerCase();
   if (!/^0x[a-f0-9]{40}$/.test(wallet)) throw new Error('Wallet Cassa PHARAOH non valido');
 
-  const numeroPosizionale = calcolaPosizioneGlobaleEntrata(targetTavola.numero, 1);
-  const accountKey = `SYSTEM:CASSA:ENTRATA:${numeroPosizionale}`;
+  const economic = require('./economic-flow').configuredFlow(client);
+  await economic.assertProjectsCapital();
+  if (wallet !== String(process.env.PHARAOH_PROJECTS_WALLET || '').toLowerCase()) throw new Error('CASSA_PROJECTS_WALLET_MISMATCH');
 
   const existingAudit = await db.getEntryRolloverBySourceTable(sourceTavola.id, client);
   if (existingAudit) {
     if (Number(existingAudit.target_tavola_id) !== Number(targetTavola.id) || String(existingAudit.cassa_wallet).toLowerCase() !== wallet) {
       throw new Error(`Riporto economico sorgente ${sourceTavola.id} gia materializzato con destinazione diversa`);
     }
-    const existingAccount = await db.getAccountByKey(accountKey, client);
-    if (!existingAccount) {
-      throw new Error(`Audit Cassa esistente senza account ${accountKey}: riconciliazione richiesta`);
+    const existingPosizione = await db.getPosizioneById(existingAudit.posizione_id, client);
+    if (!existingPosizione || existingPosizione.tipo !== 'CASSA' || !existingPosizione.account_id) {
+      throw new Error(`Audit Cassa ${existingAudit.id} senza posizione completa: riconciliazione richiesta`);
     }
-    return { audit: existingAudit, account: existingAccount, idempotent: true };
+    const existingAccount = await db.getAccountById(existingPosizione.account_id, client);
+    if (!existingAccount) {
+      throw new Error(`Audit Cassa ${existingAudit.id} senza account: riconciliazione richiesta`);
+    }
+    return { audit: existingAudit, account: existingAccount, posizione: existingPosizione, idempotent: true };
   }
 
+  const numeroPosizionale = await db.allocateNextEntryNumeroPosizionale(client);
+  const accountKey = `SYSTEM:CASSA:ENTRATA:${numeroPosizionale}`;
   let cassaAccount = await db.getAccountByKey(accountKey, client);
   if (!cassaAccount) {
     cassaAccount = await db.createAccount({
       wallet,
-      nome: `CASSA PHARAOH #${numeroPosizionale}`,
+      nome: `CASSA PROGETTI #${numeroPosizionale}`,
       tipo: 'PRIMARIO',
       sigla: null,
       accountKey,
@@ -421,7 +434,7 @@ async function materializzaCassaEntrata({
     tavolaNumero: targetTavola.numero,
     livello: 0,
     wallet,
-    nome: `CASSA PHARAOH #${numeroPosizionale}`,
+    nome: `CASSA PROGETTI #${numeroPosizionale}`,
     tipo: 'CASSA',
     donoImporto: 100,
     turno: targetTurno,
@@ -430,6 +443,7 @@ async function materializzaCassaEntrata({
     accountId: cassaAccount.id,
     accountSigla: cassaAccount.sigla || null,
     casellaForzata: 1,
+    numeroPosizionaleForzato: numeroPosizionale,
     client
   });
 
@@ -467,6 +481,7 @@ async function materializzaCassaEntrata({
     posizioneId: placement.posizione.id
   }, client);
 
+  await economic.recordProjectsPosition(cassaAccount,{positionId:placement.posizione.id,number:numeroPosizionale});
   return { audit, placement, account: cassaAccount, idempotent: false };
 }
 

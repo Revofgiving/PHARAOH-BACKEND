@@ -179,6 +179,8 @@ async function ensureCrossRegistry(row, client, dependencies = {}) {
 }
 
 async function scheduleRhaExit({ rhaEventKey, beneficiaryWallet, accountId = null, accountSigla = null, turno = null }, client = null) {
+  if (!client) throw makeError('Transaction required for reserve-backed RHA', 'RHA_TRANSACTION_REQUIRED');
+  await require('./economic-ledger').configuredLedger(client).ready();
   const event = String(rhaEventKey || '').trim();
   if (!event) throw makeError('rhaEventKey obbligatorio', 'RHA_CROSS_EVENT_REQUIRED');
   const beneficiary = normalizeWallet(beneficiaryWallet, 'beneficiaryWallet');
@@ -237,6 +239,10 @@ async function scheduleRhaExit({ rhaEventKey, beneficiaryWallet, accountId = nul
         String(row.destination_wallet).toLowerCase() !== spec.dest) {
       throw makeError('Operazione RHA esistente non coerente', 'RHA_CROSS_OPERATION_CONFLICT', false, 409);
     }
+    const ledger = require('./economic-ledger').configuredLedger(client);
+    const reserveBucket = require('./economic-flow').exitKeys(event)[spec.target];
+    await ledger.prepareMovement({key:`CROSS:${key}`,reserveBucket,to:spec.dest,
+      amountAtomic:require('./economic-amounts').usdc(String(spec.amount)),purpose:`RHA_${spec.target}_OUT`});
     operations.push(publicOperation(row));
   }
 
@@ -481,6 +487,8 @@ async function ensureRogRegistration(row, client, cfg, p, dependencies = {}) {
 }
 
 async function notifyTarget(row, cfg, fetchImpl = fetch) {
+  const policy = require('./cross-notification-policy');
+  const timeoutMs = policy.timeoutMs();
   const body = {
     event_key: row.event_key,
     origine: 'PHARAOH',
@@ -497,7 +505,6 @@ async function notifyTarget(row, cfg, fetchImpl = fetch) {
     } : {})
   };
   const controller = new AbortController();
-  const timeoutMs = Number(process.env.CROSS_OUTBOUND_TIMEOUT_MS || 10000);
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetchImpl(cfg.receiverUrl, {
@@ -509,8 +516,10 @@ async function notifyTarget(row, cfg, fetchImpl = fetch) {
         'X-Platform-Signature': auth.signBody(body, cfg.target)
       },
       body: JSON.stringify(body),
+      redirect: 'error',
       signal: controller.signal
     });
+    if (response.redirected) throw policy.failure('CROSS_OUTBOUND_REDIRECT_FORBIDDEN', 'Cross receiver redirects are not allowed');
     let payload = null;
     try { payload = await response.json(); } catch (_) { /* invalid JSON handled below */ }
     if (!response.ok || payload?.success !== true) {
@@ -520,6 +529,7 @@ async function notifyTarget(row, cfg, fetchImpl = fetch) {
       error.payload = payload;
       throw error;
     }
+    policy.assertCompletion(payload, row, cfg);
     if (cfg.target === 'ROG') {
       const beneficiary = String(row.beneficiary_wallet).toLowerCase();
       const rgxOwner = String(payload?.rgxOwnerWallet || '').toLowerCase();
@@ -538,56 +548,10 @@ async function notifyTarget(row, cfg, fetchImpl = fetch) {
     }
     return payload;
   } catch (error) {
-    if (error?.name === 'AbortError') throw makeError(`Timeout notifica ${cfg.target}`, 'CROSS_OUTBOUND_NOTIFY_FAILED', true, 503);
+    if (policy.isRetryableTransport(error)) throw makeError(`Notifica ${cfg.target} interrotta; ripetere solo la notifica idempotente`, 'CROSS_OUTBOUND_NOTIFY_FAILED', true, 503);
     throw error;
   } finally {
     clearTimeout(timer);
-  }
-}
-
-async function submitTransfer({ client, row, cfg, p, dependencies }) {
-  assertOperationInvariant(row, cfg);
-  let signerLocked = false;
-  let tx = null;
-  try {
-    await client.query('SELECT pg_advisory_lock(hashtext($1))', [GLOBAL_PAYOUT_SIGNER_LOCK]);
-    signerLocked = true;
-
-    const signer = dependencies.signer || signerFor(p);
-    const address = String(await signer.getAddress()).toLowerCase();
-    if (address !== cfg.sourceWallet) throw makeError('La chiave payout non corrisponde alla Cassa PHARAOH', 'PAYOUT_WALLET_MISMATCH', false, 503);
-    const network = await p.getNetwork();
-    if (Number(network.chainId) !== cfg.chainId) throw makeError('Rete Polygon non coerente', 'BLOCKCHAIN_WRONG_NETWORK');
-
-    const nonce = await p.getTransactionCount(address, 'pending');
-    row = (await client.query(
-      `UPDATE cross_outbound_operations
-          SET status='TRANSFER_SUBMITTING', sender_nonce=$2, attempts=attempts+1, updated_at=NOW(), last_error=NULL
-        WHERE event_key=$1 RETURNING *`,
-      [row.event_key, nonce]
-    )).rows[0];
-
-    const contract = dependencies.contract || new ethers.Contract(cfg.usdcAddress, ERC20_ABI, signer);
-    tx = await contract.transfer(cfg.destinationWallet, ethers.parseUnits(String(Number(row.amount_usdc)), 6), { nonce });
-    row = (await client.query(
-      `UPDATE cross_outbound_operations SET payment_tx_hash=$2, updated_at=NOW() WHERE event_key=$1 RETURNING *`,
-      [row.event_key, String(tx.hash).toLowerCase()]
-    )).rows[0];
-    return { row, tx };
-  } catch (error) {
-    if (row?.sender_nonce != null && !row?.payment_tx_hash) {
-      await client.query(
-        `UPDATE cross_outbound_operations
-            SET status='RECONCILIATION_REQUIRED', last_error=$2, updated_at=NOW()
-          WHERE event_key=$1`,
-        [row.event_key, String(error.message).slice(0, 1000)]
-      ).catch(() => null);
-    }
-    throw error;
-  } finally {
-    if (signerLocked) {
-      try { await client.query('SELECT pg_advisory_unlock(hashtext($1))', [GLOBAL_PAYOUT_SIGNER_LOCK]); } catch (_) { /* connection release is final guard */ }
-    }
   }
 }
 
@@ -612,46 +576,31 @@ async function processOperation(eventKey, dependencies = {}) {
     assertOperationInvariant(row, cfg);
     const p = dependencies.provider || provider();
 
-    if (row.payment_tx_hash) {
-      const proof = await verifyConfirmedTransfer(row, p, cfg);
-      row = (await client.query(
-        `UPDATE cross_outbound_operations
-            SET status='FUNDS_CONFIRMED', blockchain_proof=$2::jsonb,
-                funds_confirmed_at=COALESCE(funds_confirmed_at,NOW()), updated_at=NOW(), last_error=NULL
-          WHERE event_key=$1 RETURNING *`,
-        [key, JSON.stringify(proof)]
-      )).rows[0];
-    } else if (row.status === 'TRANSFER_SUBMITTING' || row.status === 'RECONCILIATION_REQUIRED') {
-      row = (await client.query(
-        `UPDATE cross_outbound_operations
-            SET status='RECONCILIATION_REQUIRED', updated_at=NOW(),
-                last_error=COALESCE(last_error,'Nonce riservato ma tx hash assente: riconciliazione manuale necessaria')
-          WHERE event_key=$1 RETURNING *`,
-        [key]
-      )).rows[0];
-      throw makeError('Operazione richiede riconciliazione prima di qualsiasi nuovo invio', 'CROSS_OUTBOUND_RECONCILIATION_REQUIRED', false, 409);
-    } else {
-      const submitted = await submitTransfer({ client, row, cfg, p, dependencies });
-      row = submitted.row;
-      try {
-        const receipt = await submitted.tx.wait(cfg.minConfirmations);
-        if (!receipt) throw makeError('Receipt payout cross non disponibile', 'CROSS_OUTBOUND_TX_PENDING', true, 425);
-        const proof = await verifyConfirmedTransfer(row, p, cfg);
-        row = (await client.query(
-          `UPDATE cross_outbound_operations
-              SET status='FUNDS_CONFIRMED', blockchain_proof=$2::jsonb,
-                  funds_confirmed_at=NOW(), updated_at=NOW(), last_error=NULL
-            WHERE event_key=$1 RETURNING *`,
-          [key, JSON.stringify(proof)]
-        )).rows[0];
-      } catch (error) {
-        await client.query(
-          `UPDATE cross_outbound_operations SET last_error=$2, updated_at=NOW() WHERE event_key=$1`,
-          [key, String(error.message).slice(0, 1000)]
-        ).catch(() => null);
-        throw error;
-      }
+    const dispatcher = dependencies.dispatcher || require('./treasury-transfer-manager').configuredDispatcher();
+    const movementKey = `CROSS:${key}`;
+    const core = await dispatcher.read(movementKey);
+    if (core.source_wallet !== cfg.sourceWallet || core.destination_wallet !== cfg.destinationWallet ||
+        String(core.amount_atomic) !== require('./economic-amounts').usdc(String(row.amount_usdc)).toString()) {
+      throw makeError('Cross reserve does not match the existing operation','CROSS_ECONOMIC_RESERVE_CONFLICT');
     }
+    if (row.payment_tx_hash && String(row.payment_tx_hash).toLowerCase() !== core.tx_hash) {
+      throw makeError('Historical transfer requires cutover reconciliation','CROSS_TRANSFER_HASH_CONFLICT');
+    }
+    let settled;
+    try { settled = await dispatcher.run(movementKey); }
+    catch (error) {
+      const current = await dispatcher.read(movementKey);
+      if (current.tx_hash) await client.query(`UPDATE cross_outbound_operations SET payment_tx_hash=$2,
+        status='RECONCILIATION_REQUIRED',last_error=$3,updated_at=now() WHERE event_key=$1`,[key,current.tx_hash,error.code||'TRANSFER_RECONCILIATION_REQUIRED']);
+      throw error;
+    }
+    if (settled.txHash) {
+      row=(await client.query(`UPDATE cross_outbound_operations SET payment_tx_hash=$2,
+        status=$3,blockchain_proof=$4::jsonb,updated_at=now(),
+        funds_confirmed_at=CASE WHEN $3='FUNDS_CONFIRMED' THEN COALESCE(funds_confirmed_at,now()) ELSE funds_confirmed_at END
+        WHERE event_key=$1 RETURNING *`,[key,settled.txHash,settled.confirmed?'FUNDS_CONFIRMED':'TRANSFER_SUBMITTING',JSON.stringify(settled.proof)])).rows[0];
+    }
+    if (!settled.confirmed) throw makeError('Known transaction awaiting confirmation; no second transfer', 'CROSS_OUTBOUND_TX_PENDING', true, 425);
 
     // Il trasferimento RHA viene prima ancorato al PharaohRegistry. Solo dopo
     // viene notificato il receiver ROG/URANUS, cosi un crash non puo lasciare
@@ -725,6 +674,18 @@ async function listOperations(limit = 100) {
 async function attachReconciledTx({ eventKey, paymentTxHash }) {
   const key = String(eventKey || '').trim();
   const hash = normalizeTxHash(paymentTxHash);
+  const current = await pg.queryOne('SELECT * FROM cross_outbound_operations WHERE event_key=$1',[key]);
+  if (!current || current.status !== 'RECONCILIATION_REQUIRED' || current.payment_tx_hash)
+    throw makeError('Operazione non riconciliabile', 'CROSS_OUTBOUND_RECONCILE_CONFLICT', false, 409);
+  const dispatcher = require('./treasury-transfer-manager').configuredDispatcher();
+  const movement = await dispatcher.read(`CROSS:${key}`);
+  if (movement.source_wallet !== String(current.source_wallet).toLowerCase()
+    || movement.destination_wallet !== String(current.destination_wallet).toLowerCase()
+    || require('./economic-amounts').atomic(movement.amount_atomic) !== require('./economic-amounts').usdc(String(current.amount_usdc)))
+    throw makeError('Riserva cross non coerente', 'CROSS_OUTBOUND_ECONOMIC_IDENTITY_CONFLICT', false, 409);
+  // A public hash cannot turn a failed transfer into a settled one: verify the
+  // ERC20 receipt and consume the unique reserve before updating the legacy view.
+  await dispatcher.attachManualProof(`CROSS:${key}`,hash);
   const result = await pg.queryOne(
     `UPDATE cross_outbound_operations
         SET payment_tx_hash=$2, status='TRANSFER_SUBMITTING', last_error=NULL, updated_at=NOW()
@@ -775,6 +736,5 @@ module.exports = {
   _notifyTarget: notifyTarget,
   _getConfig: getConfig,
   _publicOperation: publicOperation,
-  _assertOperationInvariant: assertOperationInvariant,
-  _submitTransfer: submitTransfer
+  _assertOperationInvariant: assertOperationInvariant
 };

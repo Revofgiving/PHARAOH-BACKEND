@@ -37,6 +37,12 @@ function runStaticChecks() {
     'database/0013_pharaoh_treasury_registry_v3.sql',
     'database/0014_rog_rha_registration_evidence.sql',
     'database/0015_direct_rog_async_gate.sql',
+    'database/0026_economic_ledger_s0.sql',
+    'database/0027_continuity_non_genealogical.sql',
+    'database/0028_secondary_function_identity_scope.sql',
+    'economic-ledger.js', 'economic-store.js', 'economic-flow.js',
+    's0-materializer.js', 'treasury-transfer-manager.js', 'treasury-chain-adapter.js',
+    'payout-economic-adapter.js', 'economic-worker.js', 'continuity-manager.js',
     'direct-donation-manager.js',
     'direct-donation-session-manager.js',
     'pharaoh-registry-manager.js',
@@ -57,7 +63,10 @@ function runStaticChecks() {
 
   try {
     const plan = migrations.loadPlan();
-    check(plan.length === 24, 'PIANO_MIGRAZIONI_DEVE_AVERE_24_STEP', failures);
+    check(plan.length === 28, 'PIANO_MIGRAZIONI_DEVE_AVERE_28_STEP', failures);
+    check(plan.some(m => m.id === '0026_economic_ledger_s0'), 'ECONOMIC_LEDGER_MIGRATION_MISSING', failures);
+    check(plan.some(m => m.id === '0027_continuity_non_genealogical'), 'CONTINUITY_MIGRATION_MISSING', failures);
+    check(plan.some(m => m.id === '0028_secondary_function_identity_scope'), 'SECONDARY_IDENTITY_SCOPE_MIGRATION_MISSING', failures);
     check(plan.some(m => m.id === '0004_cross_movements'), 'MIGRATION_0004_MANCANTE', failures);
     check(plan.some(m => m.id === '0005_rha_dual_300_200'), 'MIGRATION_0005_MANCANTE', failures);
     check(plan.some(m => m.id === '0006_thot_humanitarian_reentry'), 'MIGRATION_0006_MANCANTE', failures);
@@ -93,8 +102,9 @@ function runStaticChecks() {
   check(!api.includes("crossAuth.verifyRequest(req, 'ROG')"), 'ROG_TO_PHARAOH_NON_DEVE_ESSERE_ABILITATO', failures);
 
   const integrationPreflight = read('ops/integration-preflight.js');
-  check(integrationPreflight.includes("ethers.id('PHARAOH_TREASURY_REGISTRY_V3')"), 'INTEGRATION_REGISTRY_ID_CHECK_MANCANTE', failures);
+  check(integrationPreflight.includes("ethers.id('PHARAOH_TREASURY_REGISTRY_V4')"), 'INTEGRATION_REGISTRY_ID_CHECK_MANCANTE', failures);
   check(integrationPreflight.includes('pharaohTreasury()'), 'INTEGRATION_REGISTRY_TREASURY_CHECK_MANCANTE', failures);
+  check(integrationPreflight.includes('projectsTreasury()'), 'INTEGRATION_REGISTRY_PROJECTS_TREASURY_CHECK_MANCANTE', failures);
   check(!integrationPreflight.includes('URANUS_REGISTRY_ADDRESS'), 'INTEGRATION_REGISTRY_NON_DEVE_DIPENDERE_DA_URANUS_REGISTRY', failures);
 
   const directFlow = read('donation-flow-manager.js');
@@ -102,9 +112,13 @@ function runStaticChecks() {
   check(directFlow.includes('maxPosizioni: 1'), 'DIRECT_MAX_1_MANCANTE', failures);
   check(directFlow.includes('pharaohRegistry.registerDirectIncoming'), 'DIRECT_REGISTRY_MANCANTE', failures);
 
+  check(directFlow.includes('.admitExternal('), 'DIRECT_FUNDED_MATERIALIZATION_MISSING', failures);
+  check(read('gift-session-manager.js').includes('.holdExternalPayment('), 'PREPAID_GIFT_RESERVE_MISSING', failures);
+  check(read('api-server.js').includes('registerEconomicAdmin'), 'ECONOMIC_ADMIN_NOT_WIRED', failures);
+  check(read('economic-worker.js').includes('recuperaOperazioniPostCommit'), 'ECONOMIC_POSTCOMMIT_NOT_WIRED', failures);
   const registryManager = read('pharaoh-registry-manager.js');
   check(registryManager.includes('EXPECTED_CONTRACT_ID') && registryManager.includes('contract.CONTRACT_ID()'), 'REGISTRY_CONTRACT_ID_GUARD_MANCANTE', failures);
-  check(registryManager.includes("EXPECTED_CONTRACT_VERSION = '3.0.0'"), 'REGISTRY_VERSION_GUARD_MANCANTE', failures);
+  check(registryManager.includes("EXPECTED_CONTRACT_VERSION = '4.0.0'"), 'REGISTRY_VERSION_GUARD_MANCANTE', failures);
 
   const giftFlow = read('gift-flow-manager.js');
   check(giftFlow.includes('GIFT_PHARAOH_AMOUNT_USDC = 100'), 'GIFT_100_MANCANTE', failures);
@@ -179,6 +193,7 @@ function runStaticChecks() {
 }
 
 function runProductionChecks() {
+  require('./v4-release-gate').assertReleaseAllowed();
   const failures = runStaticChecks();
   const { Wallet } = require('ethers');
   const security = require('../security-manager');
@@ -201,6 +216,18 @@ function runProductionChecks() {
       const registrySigner = new Wallet(process.env.PHARAOH_REGISTRY_PRIVATE_KEY).address.toLowerCase();
       check(/^0x[a-f0-9]{40}$/.test(registrySigner), 'PHARAOH_REGISTRY_SIGNER_NON_VALIDO', failures);
     } catch (_) { failures.push('PHARAOH_REGISTRY_PRIVATE_KEY_NON_VALIDA'); }
+  }
+
+  for (const spec of [
+    ['PHARAOH_GEMELLI_SIGNING_MODE','PHARAOH_GEMELLI_PRIVATE_KEY','PHARAOH_GEMELLI_WALLET','CHIAVE_GEMELLI_NON_CORRISPONDE_AL_WALLET'],
+    ['PHARAOH_PROJECTS_SIGNING_MODE','PHARAOH_PROJECTS_PRIVATE_KEY','PHARAOH_PROJECTS_WALLET','CHIAVE_PROJECTS_NON_CORRISPONDE_AL_WALLET']
+  ]) {
+    const [modeVar,keyVar,walletVar,mismatchCode] = spec;
+    if (String(process.env[modeVar] || '').toUpperCase() !== 'AUTOMATIC') continue;
+    try {
+      const signer = new Wallet(process.env[keyVar]).address.toLowerCase();
+      check(Boolean(process.env[walletVar]) && signer === process.env[walletVar].toLowerCase(), mismatchCode, failures);
+    } catch (_) { failures.push(`${keyVar}_NON_VALIDA`); }
   }
 
   return [...new Set(failures)];

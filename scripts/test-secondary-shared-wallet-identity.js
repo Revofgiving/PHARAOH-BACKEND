@@ -10,6 +10,7 @@ let nextId = 100;
 let nextGemelloNumeroPosizionale = 26;
 const byId = new Map();
 const created = [];
+const transaction = {fixture:true};
 
 const primary = {
   id: 23,
@@ -57,6 +58,8 @@ const originalLoad = Module._load;
 Module._load = function(request, parent, isMain) {
   if (parent && path.resolve(parent.filename) === path.join(ROOT, 'account-manager.js')) {
     if (request === './db-manager') return dbStub;
+    if (request === './economic-ledger') return {configuredLedger(c){assert.ok(c); return {async ready(){}};}};
+    if (request === './economic-flow') return {configuredFlow(c){assert.ok(c); return {async inherit(parentId,child){assert.equal(child.wallet,wallet); assert.ok(byId.has(Number(parentId)));}};}};
     if (request === './container-manager') return {};
   }
   return originalLoad.call(this, request, parent, isMain);
@@ -74,26 +77,26 @@ delete require.cache[accountPath];
     assert.equal(accounts.calcolaSiglaGemello('1-A', 2), '2-A');
     assert.equal(accounts.calcolaSiglaPerpetuo('1-A', 1), '1-A.1');
 
-    const p1 = await accounts.creaPerpetuo(wallet, '23', 1, null, primary.id);
+    const p1 = await accounts.creaPerpetuo(wallet, '23', 1, transaction, primary.id);
     assert.equal(p1.wallet, wallet);
     assert.equal(p1.sigla, '23.1');
     byId.set(p1.account.id, { ...p1.account, root_account_id: 23 });
 
-    const g1 = await accounts.creaGemello(wallet, '23', 1, null, primary.id);
+    const g1 = await accounts.creaGemello(wallet, '23', 1, transaction, primary.id);
     assert.equal(g1.wallet, wallet);
     assert.equal(g1.sigla, '1-23');
     assert.equal(g1.numeroPosizionalePrenotato, 26);
     byId.set(g1.account.id, { ...g1.account, root_account_id: 23 });
 
-    const p2 = await accounts.creaPerpetuo(wallet, '23.1', 2, null, p1.account.id);
+    const p2 = await accounts.creaPerpetuo(wallet, '23.1', 2, transaction, p1.account.id);
     assert.equal(p2.wallet, wallet);
     assert.equal(p2.sigla, '23.2');
 
-    const gp = await accounts.creaPerpetuo(wallet, '1-23', 1, null, g1.account.id);
+    const gp = await accounts.creaPerpetuo(wallet, '1-23', 1, transaction, g1.account.id);
     assert.equal(gp.wallet, wallet);
     assert.equal(gp.sigla, '1-23.1');
 
-    const g2 = await accounts.creaGemello(wallet, '1-23', 2, null, g1.account.id);
+    const g2 = await accounts.creaGemello(wallet, '1-23', 2, transaction, g1.account.id);
     assert.equal(g2.wallet, wallet);
     assert.equal(g2.sigla, '2-23');
     assert.equal(g2.numeroPosizionalePrenotato, 40);

@@ -115,7 +115,8 @@ async function testOrchestration(tipoAccount) {
       assert.equal(input.count, 50);
       return Array.from({ length: 50 }, (_, i) => ({
         index: i + 1,
-        wallet,
+        wallet: cassa,
+        positionClass: 'PILETTA', ownerWallet: null, automaticReceiverReentry: false,
         accountId: 11000 + i,
         numeroPosizionale: 12000 + i,
         sigla: String(12000 + i),
@@ -130,6 +131,7 @@ async function testOrchestration(tipoAccount) {
   const originalLoad = Module._load;
   Module._load = function(request, parent, isMain) {
     if (parent && path.resolve(parent.filename) === path.join(ROOT, 'function-manager.js')) {
+      if (request === './economic-ledger') return {configuredLedger(c){ assert.ok(c); return {async ready(){}}; }};
       if (request === './db-manager') return dbStub;
       if (request === './rules-engine') return rules;
       if (request === './account-manager') return {};

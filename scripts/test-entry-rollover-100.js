@@ -8,42 +8,58 @@ const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..');
 const CASSA = '0x2222222222222222222222222222222222222222';
 
+process.env.PHARAOH_PROJECTS_WALLET = CASSA;
+const projectMemberships = [];
 const positions = new Map();
-const reserved = new Map();
 const rollovers = new Map();
 const accountsByKey = new Map();
+const accountsById = new Map();
 let nextAccountId = 5000;
 const tableStatus = new Map();
 let nextPositionId = 1;
 let nextTableId = 1000;
 let nextTableNumber = 2;
+let lastGlobal = 0;
 
 function list(tableId) {
   if (!positions.has(Number(tableId))) positions.set(Number(tableId), []);
   return positions.get(Number(tableId));
 }
+function isGemelloReserved(n) { return n >= 26 && (n - 26) % 14 === 0; }
+function allPositions() { return [...positions.values()].flat(); }
 
 const dbStub = {
   async countPosizioniInTavola(tableId) { return list(tableId).length; },
   async getPosizioniTavola(tableId) { return list(tableId).map(x => ({ ...x })); },
-  async getEntryReservedSlots({ turnoNumero, tavolaNumero }) {
-    return reserved.get(`${turnoNumero}:${tavolaNumero}`) || [];
+  async allocateNextEntryNumeroPosizionale() {
+    let n = lastGlobal + 1;
+    while (isGemelloReserved(n) || allPositions().some(p => Number(p.numero_posizionale) === n)) n += 1;
+    lastGlobal = n;
+    return n;
   },
-  async shiftEntryFunctionReservationFromSlotOne({ turnoNumero, tavolaNumero }) {
-    const key = `${turnoNumero}:${tavolaNumero}`;
-    const slots = [...(reserved.get(key) || [])];
-    if (!slots.includes(1)) return null;
-    const used = new Set(slots.filter(x => x !== 1));
-    let target = null;
-    for (let c = 2; c <= 6; c += 1) { if (!used.has(c)) { target = c; break; } }
-    assert.ok(target, 'deve esistere una casella per spostare la Funzione');
-    reserved.set(key, slots.map(x => x === 1 ? target : x));
-    return { casella: target };
+  async assertEntryNumeroPosizionaleAssignable(_client, numero) {
+    const n = Number(numero);
+    assert.ok(Number.isInteger(n) && n > 0);
+    assert.ok(!isGemelloReserved(n), `numero ${n} non deve essere riservato Gemello`);
+    assert.ok(!allPositions().some(p => Number(p.numero_posizionale) === n), `numero ${n} non deve essere occupato`);
+    return n;
   },
   async createPosizione(input) {
-    const row = { id: nextPositionId++, tavola_id: Number(input.tavolaId), casella: Number(input.casella), wallet: input.wallet, nome: input.nome, tipo: input.tipo, dono_importo: Number(input.donoImporto), account_id: input.accountId, account_sigla: input.accountSigla };
+    const row = {
+      id: nextPositionId++,
+      tavola_id: Number(input.tavolaId),
+      casella: Number(input.casella),
+      wallet: input.wallet,
+      nome: input.nome,
+      tipo: input.tipo,
+      dono_importo: Number(input.donoImporto),
+      account_id: input.accountId,
+      account_sigla: input.accountSigla,
+      numero_posizionale: Number(input.numeroPosizionale)
+    };
     const rows = list(input.tavolaId);
     assert.ok(!rows.some(x => x.casella === row.casella), `casella duplicata ${row.casella}`);
+    assert.ok(!allPositions().some(x => Number(x.numero_posizionale) === row.numero_posizionale), `numero globale duplicato ${row.numero_posizionale}`);
     rows.push(row);
     return { ...row };
   },
@@ -51,28 +67,60 @@ const dbStub = {
   async getNextTavolaNumero() { return nextTableNumber++; },
   async createTavola(input) { return { id: nextTableId++, ...input }; },
   async getAccountByKey(key) { return accountsByKey.get(String(key)) || null; },
+  async getAccountById(id) { return accountsById.get(Number(id)) || null; },
   async createAccount(input) {
-    const row = { id: nextAccountId++, wallet: String(input.wallet).toLowerCase(), nome: input.nome, tipo: input.tipo, sigla: input.sigla || null, account_key: input.accountKey, numero_posizionale: null, root_account_id: input.rootAccountId || null, origin_kind: input.originKind };
+    const row = {
+      id: nextAccountId++,
+      wallet: String(input.wallet).toLowerCase(),
+      nome: input.nome,
+      tipo: input.tipo,
+      sigla: input.sigla || null,
+      account_key: input.accountKey,
+      numero_posizionale: null,
+      root_account_id: input.rootAccountId || null,
+      origin_kind: input.originKind
+    };
     accountsByKey.set(String(input.accountKey), row);
+    accountsById.set(Number(row.id), row);
     return { ...row };
   },
   async setAccountNumeroPosizionale(id, numero) {
-    for (const [k, row] of accountsByKey.entries()) {
-      if (Number(row.id) === Number(id)) { row.numero_posizionale = Number(numero); if (!row.sigla) row.sigla = String(numero); accountsByKey.set(k, row); return { ...row }; }
-    }
-    throw new Error('account stub non trovato');
+    const row = accountsById.get(Number(id));
+    if (!row) throw new Error('account stub non trovato');
+    row.numero_posizionale = Number(numero);
+    if (!row.sigla) row.sigla = String(numero);
+    accountsById.set(Number(id), row);
+    if (row.account_key) accountsByKey.set(String(row.account_key), row);
+    return { ...row };
   },
   async updateAccountIdentity(id, patch) {
-    for (const [k, row] of accountsByKey.entries()) {
-      if (Number(row.id) === Number(id)) { if (patch.rootAccountId !== undefined) row.root_account_id = patch.rootAccountId; if (patch.sigla !== undefined) row.sigla = patch.sigla; accountsByKey.set(k, row); return { ...row }; }
-    }
-    throw new Error('account stub non trovato');
+    const row = accountsById.get(Number(id));
+    if (!row) throw new Error('account stub non trovato');
+    if (patch.rootAccountId !== undefined) row.root_account_id = patch.rootAccountId;
+    if (patch.sigla !== undefined) row.sigla = patch.sigla;
+    accountsById.set(Number(id), row);
+    if (row.account_key) accountsByKey.set(String(row.account_key), row);
+    return { ...row };
   },
   async syncEntryPlacementIdentity({ posizioneId, tavolaSdoppiamentoId, accountId, accountSigla }) {
-    for (const rows of positions.values()) { const p = rows.find(x => Number(x.id) === Number(posizioneId)); if (p) { p.account_id = accountId; p.account_sigla = accountSigla; p.sdoppiamento_tavola_id = tavolaSdoppiamentoId; } }
+    for (const rows of positions.values()) {
+      const p = rows.find(x => Number(x.id) === Number(posizioneId));
+      if (p) {
+        p.account_id = accountId;
+        p.account_sigla = accountSigla;
+        p.sdoppiamento_tavola_id = tavolaSdoppiamentoId;
+      }
+    }
     return { ok: true };
   },
-  async updatePosizioneSdoppiamento() { return { ok: true }; },
+  async updatePosizioneSdoppiamento(posizioneId, tavolaSdoppiamentoId) {
+    for (const rows of positions.values()) {
+      const p = rows.find(x => Number(x.id) === Number(posizioneId));
+      if (p) p.sdoppiamento_tavola_id = tavolaSdoppiamentoId;
+    }
+    return { ok: true };
+  },
+  async getPosizioneById(id) { return allPositions().find(p => Number(p.id) === Number(id)) || null; },
   async updateTavolaStatus(numero, status) { tableStatus.set(Number(numero), status); return { numero, status }; },
   async getEntryRolloverBySourceTable(sourceId) { return rollovers.get(Number(sourceId)) || null; },
   async createEntryRolloverAudit(input) {
@@ -99,9 +147,8 @@ const dbStub = {
 
 const originalLoad = Module._load;
 Module._load = function(request, parent, isMain) {
-  if (parent && path.resolve(parent.filename) === path.join(ROOT, 'table-manager.js') && request === './db-manager') {
-    return dbStub;
-  }
+  if (parent && path.resolve(parent.filename) === path.join(ROOT, 'table-manager.js') && request === './db-manager') return dbStub;
+  if (parent && path.resolve(parent.filename) === path.join(ROOT, 'table-manager.js') && request === './economic-flow') return {configuredFlow(c){assert.ok(c);return {async assertProjectsCapital(){return {wallet:CASSA,balance_atomic:'100000000'};},async recordProjectsPosition(account,placed){projectMemberships.push({accountId:account.id,number:placed.number});}};}};
   return originalLoad.call(this, request, parent, isMain);
 };
 
@@ -113,116 +160,112 @@ Module._load = function(request, parent, isMain) {
   const table1 = { id: 1, numero: 1, turno: 1 };
   for (let i = 1; i <= 6; i += 1) {
     const r = await tm.posizionaDonatore({
-      tavolaId: table1.id,
-      tavolaNumero: table1.numero,
-      livello: 0,
-      wallet: `0x${String(i).padStart(40, '0')}`,
-      nome: `D${i}`,
-      tipo: 'DONATORE',
-      donoImporto: 100,
-      turno: 1,
-      sdoppiabile: true,
-      accountId: i,
-      accountSigla: String(i),
-      client: {}
+      tavolaId: 1, tavolaNumero: 1, livello: 0,
+      wallet: `0x${String(i).padStart(40, '0')}`, nome: `D${i}`,
+      tipo: 'DONATORE', donoImporto: 100, turno: 1, sdoppiabile: true,
+      accountId: i, accountSigla: String(i), client: {}
     });
     assert.equal(r.casellaOccupata, i);
-    assert.equal(r.tavolaCompleta, i === 6);
+    assert.equal(r.numeroPosizionaleGlobale, i);
   }
   assert.equal(tableStatus.get(1), 'COMPLETATA');
-  assert.equal(list(1).filter(x => x.tipo === 'DONATORE').length, 6, 'Tavola 1 deve avere 6 donatori reali');
-  assert.equal(list(1).filter(x => x.tipo === 'CASSA').length, 0, 'Tavola 1 non deve avere posizione Cassa');
 
   const table2 = { id: 2, numero: 2, turno: 2 };
-  const rollover = await tm.materializzaCassaEntrata({ sourceTavola: table1, targetTavola: table2, targetTurno: 2, cassaWallet: CASSA, client: {} });
-  assert.equal(rollover.placement.casellaOccupata, 1);
-  assert.equal(rollover.placement.numeroPosizionaleGlobale, 7, 'Tavola 2/casella 1 deve essere globale 7');
-  assert.ok(rollover.placement.tavolaSdoppiamento, 'La Cassa deve generare tavola personale');
-  assert.equal(rollover.placement.tavolaSdoppiamento.numero, 8, 'Posizione Cassa #7 deve generare Tavola personale #8');
-  assert.equal(rollover.account.numero_posizionale, 7);
-  assert.equal(rollover.account.sigla, '7');
-  assert.equal(list(2)[0].tipo, 'CASSA');
-  assert.equal(list(2)[0].wallet, CASSA);
-  assert.equal(list(2)[0].dono_importo, 100);
-  assert.equal(Number(list(2)[0].account_id), Number(rollover.account.id));
-
-  const repeat = await tm.materializzaCassaEntrata({ sourceTavola: table1, targetTavola: table2, targetTurno: 2, cassaWallet: CASSA, client: {} });
-  assert.equal(repeat.idempotent, true);
-  assert.equal(list(2).filter(x => x.tipo === 'CASSA').length, 1, 'Retry non deve duplicare la posizione Cassa');
+  const c7 = await tm.materializzaCassaEntrata({ sourceTavola: table1, targetTavola: table2, targetTurno: 2, cassaWallet: CASSA, client: {} });
+  assert.equal(c7.placement.casellaOccupata, 1);
+  assert.equal(c7.placement.numeroPosizionaleGlobale, 7);
+  assert.equal(c7.account.numero_posizionale, 7);
+  assert.ok(c7.placement.tavolaSdoppiamento);
+  const retry = await tm.materializzaCassaEntrata({ sourceTavola: table1, targetTavola: table2, targetTurno: 2, cassaWallet: CASSA, client: {} });
+  assert.equal(retry.idempotent, true);
 
   for (let i = 1; i <= 5; i += 1) {
     const r = await tm.posizionaDonatore({
-      tavolaId: table2.id,
-      tavolaNumero: table2.numero,
-      livello: 0,
-      wallet: `0x${String(100 + i).padStart(40, '0')}`,
-      nome: `N${i}`,
-      tipo: 'DONATORE',
-      donoImporto: 100,
-      turno: 2,
-      sdoppiabile: true,
-      accountId: 100 + i,
-      accountSigla: String(100 + i),
-      client: {}
+      tavolaId: 2, tavolaNumero: 2, livello: 0,
+      wallet: `0x${String(100 + i).padStart(40, '0')}`, nome: `N${i}`,
+      tipo: 'DONATORE', donoImporto: 100, turno: 2, sdoppiabile: true,
+      accountId: 100 + i, accountSigla: String(100 + i), client: {}
     });
-    assert.equal(r.casellaOccupata, i + 1);
-    assert.equal(r.numeroPosizionaleGlobale, 7 + i, `Donatore Tavola 2 deve avere globale ${7 + i}`);
-    assert.equal(r.tavolaCompleta, i === 5);
+    assert.equal(r.numeroPosizionaleGlobale, 7 + i);
   }
-  assert.equal(list(2).length, 6, 'Tavola 2 = 1 Cassa completa + 5 nuovi ingressi');
-  assert.equal(list(2).filter(x => x.tipo === 'DONATORE').length, 5);
-  assert.equal(tableStatus.get(2), 'COMPLETATA');
+  assert.equal(list(2).length, 6, 'Tavola 2 = Cassa + 5 HUMAN');
 
-  const table3 = { id: 3, numero: 3, turno: 3 };
-  reserved.set('3:3', [1, 4]);
-  const rolloverReserved = await tm.materializzaCassaEntrata({ sourceTavola: table2, targetTavola: table3, targetTurno: 3, cassaWallet: CASSA, client: {} });
-  assert.equal(rolloverReserved.placement.casellaOccupata, 1, 'Cassa PHARAOH deve avere precedenza assoluta sulla casella 1');
-  assert.equal(rolloverReserved.placement.numeroPosizionaleGlobale, 13, 'Tavola 3/casella 1 deve essere globale 13');
-  assert.equal(rolloverReserved.placement.tavolaSdoppiamento.numero, 14, 'Posizione Cassa #13 deve generare Tavola personale #14');
-  assert.deepEqual(reserved.get('3:3'), [2, 4], 'La Funzione prenotata in casella 1 deve slittare alla casella 2');
-  const donor = await tm.posizionaDonatore({
-    tavolaId: table3.id,
-    tavolaNumero: table3.numero,
-    livello: 0,
-    wallet: '0x3333333333333333333333333333333333333333',
-    nome: 'Rientro',
-    tipo: 'DONATORE',
-    donoImporto: 100,
-    turno: 3,
-    sdoppiabile: true,
-    accountId: 333,
-    accountSigla: '333',
-    client: {}
+  // Simulazione dinamica completa fino alla 19a Cassa del prospetto operativo.
+  // Ogni nuova tavola riceve Cassa in casella 1 e cinque HUMAN reali.
+  const cassaAtteseDinamiche = [7,13,19,25,32,38,45,51,58,64,71,77,84,90,97,103,109,116,122];
+  assert.equal(c7.placement.numeroPosizionaleGlobale, cassaAtteseDinamiche[0]);
+  for (let tavolaNumero = 3; tavolaNumero <= 70; tavolaNumero += 1) {
+    const sourceTavola = { id: tavolaNumero - 1, numero: tavolaNumero - 1, turno: tavolaNumero - 1 };
+    const targetTavola = { id: tavolaNumero, numero: tavolaNumero, turno: tavolaNumero };
+    const cassa = await tm.materializzaCassaEntrata({
+      sourceTavola, targetTavola, targetTurno: tavolaNumero, cassaWallet: CASSA, client: {}
+    });
+    assert.equal(
+      cassa.placement.numeroPosizionaleGlobale,
+      cassaAtteseDinamiche[tavolaNumero - 2] ?? tm.calcolaPosizioneGlobaleEntrata(tavolaNumero,1),
+      `Cassa Tavola ${tavolaNumero}`
+    );
+    assert.equal(cassa.placement.casellaOccupata, 1);
+
+    for (let slot = 2; slot <= 6; slot += 1) {
+      const donorId = tavolaNumero * 100 + slot;
+      const r = await tm.posizionaDonatore({
+        tavolaId: tavolaNumero, tavolaNumero, livello: 0,
+        wallet: `0x${String(donorId).padStart(40, '0')}`, nome: `T${tavolaNumero}H${slot - 1}`,
+        tipo: 'DONATORE', donoImporto: 100, turno: tavolaNumero, sdoppiabile: true,
+        accountId: donorId, accountSigla: String(donorId), client: {}
+      });
+      assert.equal(r.casellaOccupata, slot);
+      assert.ok(!isGemelloReserved(r.numeroPosizionaleGlobale), `HUMAN non puo usare ${r.numeroPosizionaleGlobale}`);
+    }
+    assert.equal(list(tavolaNumero).length, 6, `Tavola ${tavolaNumero} deve avere 6 posizioni fisiche`);
+  }
+
+  const globaliMaterializzati = allPositions().map(p => Number(p.numero_posizionale));
+  assert.ok(Math.max(...globaliMaterializzati)>=393);
+  assert.equal(projectMemberships.length,69);
+  for(let n=26;n<=393;n+=14)assert.ok(!globaliMaterializzati.includes(n));
+  assert.equal(new Set(globaliMaterializzati).size, globaliMaterializzati.length, 'Nessun numero posizionale puo duplicarsi');
+  [26,40,54,68,82,96,110,124].forEach(n => {
+    assert.ok(!globaliMaterializzati.includes(n), `Il numero riservato ${n} non deve essere materializzato in ENTRATA`);
   });
-  assert.equal(donor.casellaOccupata, 3, 'Rientro deve saltare caselle Funzione 1 e 4');
-  assert.equal(donor.numeroPosizionaleGlobale, 15, 'Tavola 3/casella 3 deve essere globale 15');
-  assert.equal(rolloverReserved.placement.casellaOccupata, 1);
-  assert.ok(![1, 4].includes(donor.casellaOccupata));
+
+  // La prenotazione 26 NON occupa una casella fisica. La quinta tavola fisica
+  // usa i numeri 25,27,28,29,30,31 e la Cassa successiva diventa 32.
+  const expected = [
+    [1, 1, 1], [1, 6, 6],
+    [2, 1, 7], [2, 6, 12],
+    [3, 1, 13], [3, 6, 18],
+    [4, 1, 19], [4, 6, 24],
+    [5, 1, 25], [5, 2, 27], [5, 6, 31],
+    [6, 1, 32], [6, 6, 37],
+    [7, 1, 38], [7, 2, 39], [7, 3, 41], [7, 6, 44],
+    [8, 1, 45]
+  ];
+  for (const [tavola, casella, globale] of expected) {
+    assert.equal(tm.calcolaPosizioneGlobaleEntrata(tavola, casella), globale);
+  }
+
+  const cassaAttesePure = [7,13,19,25,32,38,45,51,58,64,71,77,84,90,97,103,109,116,122];
+  cassaAttesePure.forEach((numero, index) => {
+    const tavola = index + 2;
+    assert.equal(tm.calcolaPosizioneGlobaleEntrata(tavola, 1), numero, `Cassa tavola ${tavola}`);
+  });
+  [26,40,54,68,82,96,110].forEach(n => assert.ok(isGemelloReserved(n)));
 
   const flow = fs.readFileSync(path.join(ROOT, 'donation-flow-manager.js'), 'utf8');
   const dbSource = fs.readFileSync(path.join(ROOT, 'db-manager.js'), 'utf8');
   const api = fs.readFileSync(path.join(ROOT, 'api-server.js'), 'utf8');
   assert.ok(flow.includes('materializzaCassaEntrata'));
   assert.ok(flow.includes('sacerdotiNecessari: 6'));
-  assert.ok(flow.includes('incrementSacerdotiEntrati(nuovoTurno.id'), 'La Cassa deve contare tra i 6 occupanti del turno');
+  assert.ok(flow.includes('incrementSacerdotiEntrati(nuovoTurno.id'));
   assert.ok(!flow.includes('ENTRY_RESERVE_WALLET'));
   assert.ok(!api.includes('/api/admin/doni-pendenti/entry-reserve/process'));
-  assert.ok(dbSource.includes("pf.stato IN ('RESERVED','MATERIALIZED')"), 'Numero posizionale ordinari devono rispettare prenotazioni Funzioni');
+  assert.ok(dbSource.includes('allocateNextEntryNumeroPosizionale'));
+  assert.ok(dbSource.includes("pf.stato IN ('RESERVED','MATERIALIZED','CONSUMED')"));
 
-  const expected = [
-    [1, 1, 1], [1, 6, 6],
-    [2, 1, 7], [2, 6, 12],
-    [3, 1, 13], [3, 6, 18],
-    [4, 1, 19], [4, 6, 24],
-    [5, 1, 25], [5, 6, 30],
-    [6, 1, 31], [6, 6, 36]
-  ];
-  for (const [tavola, casella, globale] of expected) {
-    assert.equal(tm.calcolaPosizioneGlobaleEntrata(tavola, casella), globale);
-  }
-
-  console.log('ENTRY_CASSA_POSITION_100_PASS');
-  console.log('PASS Tavola 1: 1..6 HUMAN; Tavola 2: Cassa completa=7 + HUMAN 8..12; Tavola 3: Cassa completa=13; Cassa sdoppia e Funzione in slot 1 slitta a slot 2');
+  console.log('ENTRY_GLOBAL_PROGRESSIVE_CASSA_FUNCTION_RESERVATIONS_PASS: 70 tables through number '+Math.max(...globaliMaterializzati)+'; real table manager with in-memory DB and protected-capital fixture, NOT PostgreSQL');
+  console.log('PASS: progressivo 1->infinito; Gemelli 26/40/54... riservati; Casse 7/13/19/25/32/38/45...');
 })().catch(error => {
   console.error(error);
   process.exitCode = 1;

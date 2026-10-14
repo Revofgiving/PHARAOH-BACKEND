@@ -116,6 +116,8 @@ function calcolaSiglaGemello(parentSigla, gemelloNumero) {
  * @param {number} perpetuoNumero - Numero progressivo (1, 2, 3...)
  */
 async function creaPerpetuo(parentWallet, parentSigla, perpetuoNumero, client = null, parentAccountId = null) {
+  if (!client) throw new Error('SECONDARY_IDENTITY_TRANSACTION_REQUIRED');
+  await require('./economic-ledger').configuredLedger(client).ready();
   const walletReale = String(parentWallet || '').trim().toLowerCase();
   const parent = parentAccountId
     ? await db.getAccountByIdentity({ accountId: parentAccountId, wallet: walletReale }, client)
@@ -140,6 +142,7 @@ async function creaPerpetuo(parentWallet, parentSigla, perpetuoNumero, client = 
     originKind: 'FUNCTION'
   }, client);
 
+  await require('./economic-flow').configuredFlow(client).inherit(parent.id,account);
   return { account, sigla, wallet: walletReale };
 }
 
@@ -155,6 +158,8 @@ async function creaPerpetuo(parentWallet, parentSigla, perpetuoNumero, client = 
  * @param {number} gemelloNumero - Numero progressivo (1, 2, 3...)
  */
 async function creaGemello(parentWallet, parentSigla, gemelloNumero, client = null, parentAccountId = null) {
+  if (!client) throw new Error('SECONDARY_IDENTITY_TRANSACTION_REQUIRED');
+  await require('./economic-ledger').configuredLedger(client).ready();
   const walletReale = String(parentWallet || '').trim().toLowerCase();
   const parent = parentAccountId
     ? await db.getAccountByIdentity({ accountId: parentAccountId, wallet: walletReale }, client)
@@ -180,6 +185,7 @@ async function creaGemello(parentWallet, parentSigla, gemelloNumero, client = nu
   const accountConNumeroPosizionale = await db.assignNextGemelloNumeroPosizionaleToAccountId(account.id, client);
   const numeroPosizionalePrenotato = accountConNumeroPosizionale.numero_posizionale;
 
+  await require('./economic-flow').configuredFlow(client).inherit(parent.id,accountConNumeroPosizionale);
   return { account: accountConNumeroPosizionale, sigla, wallet: walletReale, numeroPosizionalePrenotato };
 }
 

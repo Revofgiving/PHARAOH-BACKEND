@@ -118,6 +118,8 @@ async function assicuratiIdentita(funzione, client = null) {
     identityKey: `FUNZIONE_${funzione.id}`,
     walletProprietario,
     accountOrigineWallet: funzione.account_origine_wallet,
+    accountOrigineId: funzione.account_origine_id || null,
+    accountGeneratoId: funzione.account_generato_id || null,
     tipo: funzione.tipo,
     sigla: funzione.sigla,
     progressivo
@@ -169,6 +171,8 @@ async function assicuratiPrenotazione(funzione, turnoOrigine, turnoDestinazione,
  * @returns {Object} Dettaglio funzioni rilasciate
  */
 async function rilasciaFunzioniL3({ faraoneWallet, faraoneSigla, tipoAccount, turnoCorrente, faraoneAccountId = null }, client = null) {
+  if (!client) throw new Error('RHA_FUNCTIONS_TRANSACTION_REQUIRED');
+  await require('./economic-ledger').configuredLedger(client).ready();
   const rilasci = rules.regolaRilasciFunzioni(tipoAccount);
   const turnoEntrata = turnoCorrente + 1;  // reg.6: entrano al turno successivo
   const walletNormalizzato = faraoneWallet.toLowerCase();
@@ -179,6 +183,11 @@ async function rilasciaFunzioniL3({ faraoneWallet, faraoneSigla, tipoAccount, tu
     tipo: tipoAccount === 'SECONDARIO' ? null : tipoAccount
   }, client) || (!faraoneAccountId ? await db.getAccount(walletNormalizzato, client) : null);
   if (!sourceAccount) throw new Error('Identita account RHA non risolta');
+  const exitEventKey = `PHARAOH:L3:${Number(turnoCorrente)}:${walletNormalizzato}:USCITA_L3`;
+  const allocated = await require('./economic-ledger').configuredLedger(client).store.event(`ALLOCATE_EXIT:${require('./economic-amounts').digest(exitEventKey)}`);
+  if (!allocated || allocated.status !== 'COMPLETED' || allocated.context?.context?.level !== 'RHA'
+    || String(allocated.context.context.accountId) !== String(sourceAccount.id)) throw new Error('RHA_FUNCTIONS_EXIT_ALLOCATION_REQUIRED');
+
 
   console.log(`\n⚙️ RILASCIO FUNZIONI L3 per ${faraoneSigla} (${tipoAccount})`);
   console.log(`   Turno rilascio: ${turnoCorrente}`);
@@ -359,6 +368,10 @@ async function rilasciaFunzioniL3({ faraoneWallet, faraoneSigla, tipoAccount, tu
     console.log(`   ⛔ Gemello NON rilasciato (reg.11: Perpetuo non rilascia Gemello)`);
   }
 
+  if (sourceAccount.tipo === 'PERPETUO') {
+    risultato.continuita = await require('./continuity-manager').reserve({account:sourceAccount,turnNumber:turnoCorrente},client);
+  }
+
   // 4. ALLOCAZIONE RHA 500 — decisione aggiornata 3 settembre 2026.
   // Ogni uscita RHA, primaria o secondaria, destina l'intera quota da 500 ai due movimenti cross.
   // Non esistono quote omaggi, Doni al Volo o Doni a Credito.
@@ -378,12 +391,14 @@ async function rilasciaFunzioniL3({ faraoneWallet, faraoneSigla, tipoAccount, tu
 
 /**
  * Applica la regola THOT aggiornata (reg.13):
- * - 500 USDC restano in Cassa PHARAOH per PROGETTI_UMANITARI
+ * - 500 USDC sono riservati per trasferimento reale a CASSA PROGETTI
  * - 500 USDC materializzano 5 rientri da 100 al livello Entrata
- *   intestati al ricevente THOT
+ *   classificati PILETTA/FONDO A, mai intestati automaticamente al ricevente THOT
  * - nessun Dono a Credito o Dono al Volo viene creato
  */
 async function rilasciaFunzioniL4({ faraoneWallet, faraoneAccountId = null, faraoneSigla = null, turnoCorrente, eventKey, cassaWallet }, client = null) {
+  if (!client) throw new Error('THOT_ALLOCATION_TRANSACTION_REQUIRED');
+  await require('./economic-ledger').configuredLedger(client).ready();
   const shouldManageTx = !client;
   const pg = shouldManageTx ? require('./pg-connection-manager') : null;
   const dbClient = shouldManageTx ? await pg.getClient() : client;
@@ -436,7 +451,7 @@ async function rilasciaFunzioniL4({ faraoneWallet, faraoneAccountId = null, fara
       return {
         eventKey: event,
         idempotent: true,
-        humanitarian: { cassaWallet: treasury, amountUsdc: rules.IMPORTI.TRATTENUTA_PROGETTI_UMANITARI_L4, destination: rules.IMPORTI.DESTINAZIONE_PROGETTI_UMANITARI_L4 },
+        humanitarian: { sourceWallet: treasury, cassaWallet: process.env.PHARAOH_PROJECTS_WALLET, amountUsdc: rules.IMPORTI.TRATTENUTA_PROGETTI_UMANITARI_L4, destination: rules.IMPORTI.DESTINAZIONE_PROGETTI_UMANITARI_L4 },
         reentries: { amountUsdc: rules.IMPORTI.TRATTENUTA_RIENTRI_ENTRATA_L4, positionsExpected: rules.IMPORTI.NUM_RIENTRI_ENTRATA_L4, positionsCreated: Number(allocation.reentry_positions_created), positions: positionResult }
       };
     }
@@ -456,7 +471,7 @@ async function rilasciaFunzioniL4({ faraoneWallet, faraoneAccountId = null, fara
     return {
       eventKey: event,
       idempotent: false,
-      humanitarian: { cassaWallet: treasury, amountUsdc: rules.IMPORTI.TRATTENUTA_PROGETTI_UMANITARI_L4, destination: rules.IMPORTI.DESTINAZIONE_PROGETTI_UMANITARI_L4 },
+      humanitarian: { sourceWallet: treasury, cassaWallet: process.env.PHARAOH_PROJECTS_WALLET, amountUsdc: rules.IMPORTI.TRATTENUTA_PROGETTI_UMANITARI_L4, destination: rules.IMPORTI.DESTINAZIONE_PROGETTI_UMANITARI_L4 },
       reentries: { amountUsdc: rules.IMPORTI.TRATTENUTA_RIENTRI_ENTRATA_L4, positionsExpected: positions.length, positionsCreated: positions.length, positions }
     };
   } catch (err) {
@@ -468,12 +483,14 @@ async function rilasciaFunzioniL4({ faraoneWallet, faraoneAccountId = null, fara
 /**
  * Applica la regola ISIDE aggiornata (reg.14):
  * - 5.000 USDC materializzano 50 rientri da 100 al livello Entrata
- *   intestati al ricevente ISIDE
+ *   classificati PILETTA/FONDO A, mai intestati automaticamente al ricevente ISIDE
  * - 6.000 USDC diventano quota diretta aggiuntiva al ricevente
  * - 19.000 USDC restano netto base; payout unico ricevente = 25.000 USDC
  * - nessun Dono a Credito o Dono al Volo viene creato
  */
 async function rilasciaFunzioniL5({ faraoneWallet, faraoneAccountId = null, faraoneSigla = null, turnoCorrente, eventKey, cassaWallet }, client = null) {
+  if (!client) throw new Error('ISIDE_ALLOCATION_TRANSACTION_REQUIRED');
+  await require('./economic-ledger').configuredLedger(client).ready();
   const shouldManageTx = !client;
   const pg = shouldManageTx ? require('./pg-connection-manager') : null;
   const dbClient = shouldManageTx ? await pg.getClient() : client;

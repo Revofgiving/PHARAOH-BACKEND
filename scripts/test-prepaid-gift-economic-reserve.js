@@ -1,0 +1,18 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const A=require('../economic-amounts'),{EconomicLedger}=require('../economic-ledger');
+const {EconomicFlow}=require('../economic-flow'),{S0Materializer}=require('../s0-materializer');
+const {MemoryHarness,memoryPlacement}=require('./support/economic-memory-store');
+const T='0x'+'1'.repeat(40),U='0x'+'2'.repeat(40),V='0x'+'3'.repeat(40),F='0x'+'4'.repeat(40),TOKEN='0x'+'5'.repeat(40);
+const hash='0x'+'a'.repeat(64),cfg={treasuryWallet:T,fundAWallet:F,chainId:'137',minConfirmations:2,token:TOKEN};
+const proof={txHash:hash,from:U,to:T,tokenContract:TOKEN,chainId:'137',amountBaseUnits:'100000000',blockNumber:100,blockHash:'0x'+'b'.repeat(64),confirmations:5,transferLogIndexes:[0]};
+(async()=>{const h=new MemoryHarness();let cases=0;const run=fn=>h.transaction(store=>{const ledger=new EconomicLedger(store,cfg);return fn(new EconomicFlow({ledger,config:cfg,materializer:new S0Materializer({ledger,placement:memoryPlacement(h),config:cfg})}));});
+ const payment={origin:'GIFT',payer:U,count:1,txHash:hash,proof};const key=await run(f=>f.holdExternalPayment(payment));assert.equal(h.data.buckets.get(key).balance_atomic,'100000000');assert.equal(h.data.positions.length,0);assert.equal(h.data.counters.human_cumulative,'0');cases++;
+ const before=structuredClone(h.data);await run(f=>f.holdExternalPayment({...payment,proof:{...proof,confirmations:20}}));assert.deepEqual(h.data,before);cases++;
+ await assert.rejects(run(f=>f.holdExternalPayment({...payment,payer:V})),/PROOF_MISMATCH/);assert.deepEqual(h.data,before);cases++;
+ const admission={...payment,eventKey:'gift_fixture_1234567890',beneficiaryWallet:V,name:'Gift recipient'};const result=await run(f=>f.admitExternal(admission));assert.equal(result.positions[0].ownerWallet,V);assert.equal(h.data.counters.human_cumulative,'1');assert.equal(h.data.buckets.get(key).balance_atomic,'0');assert.equal(h.data.proofs.size,1);cases++;
+ const after=structuredClone(h.data);assert.deepEqual(await run(f=>f.admitExternal(admission)),result);assert.deepEqual(h.data,after);cases++;
+ await assert.rejects(run(f=>f.admitExternal({...admission,eventKey:'second-gift-same-payment'})),/FUNDING_REQUIRED/);assert.deepEqual(h.data,after);cases++;
+ const session=fs.readFileSync(path.join(__dirname,'../gift-session-manager.js'),'utf8');assert.match(session,/holdExternalPayment/);assert.match(session,/if \(owned\) await c.query\('BEGIN'\)/);assert.match(session,/ROLLBACK/);cases++;
+ console.log(JSON.stringify({test:'prepaid-gift-economic-reserve',status:'PASS',cases,scope:'actual service with memory store and static session wiring, not HTTP/ROG/PostgreSQL E2E'}));
+})().catch(e=>{console.error(e);process.exitCode=1;});

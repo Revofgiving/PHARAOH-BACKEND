@@ -1,0 +1,37 @@
+PHARAOH BACKEND V4 DEPLOYABLE RELEASE DELTA
+Economic/business logic intentionally unchanged.
+Changes are release gating, Docker/preflight hardening, production env validation, current docs/tests/manifests.
+
+00_DEPLOYABLE_RELEASE_README_13_OTTOBRE_2026.md
+00_LEGGIMI_PACCHETTO_COMPLETO.txt
+BACKEND_V4_IMPLEMENTATION_STATUS.md
+CERTIFICAZIONE_FINALE_BACKEND_PHARAOH_V4_11_OTTOBRE_2026.md
+COOLIFY_DEPLOY.md
+DEPLOYMENT_CHECKLIST.md
+Dockerfile
+FULL_SOURCE_FILE_LIST.txt
+FULL_SOURCE_SHA256_MANIFEST.txt
+HANDOFF_PHARAOH_FULLSTACK_4SETTEMBRE_2026.md
+PATCH_9_OTTOBRE_2026_DIRECT_1TO1_V2.md
+README_APPLY.txt
+RELEASE_ID.txt
+SHA256_MANIFEST.txt
+SHA256_MANIFEST_FINAL.txt
+V4_FORENSIC_WORK_STATUS_8_OTTOBRE.md
+docs/COLLAUDO_ISOLATO_9_OTTOBRE_2026.md
+docs/HANDOFF_RUNTIME_8_OTTOBRE_2026.md
+docs/RAPPORTO_CONFERME_E_TEST_8_OTTOBRE_2026.md
+docs/RAPPORTO_FONTI_E_TEST_8_OTTOBRE_2026.md
+docs/RAPPORTO_INTEGRAZIONE_RUNTIME_8_OTTOBRE_2026.md
+docs/RAPPORTO_QA_POSTGRES_CROSS_9_OTTOBRE_2026.md
+evidence/previous-top-level-manifests-11oct/FULL_SOURCE_FILE_LIST.txt
+evidence/previous-top-level-manifests-11oct/FULL_SOURCE_SHA256_MANIFEST.txt
+evidence/previous-top-level-manifests-11oct/SHA256_MANIFEST.txt
+evidence/previous-top-level-manifests-11oct/SHA256_MANIFEST_FINAL.txt
+ops/certify-deployable-package.sh
+ops/deploy-preflight.js
+ops/v4-release-gate.js
+release-state.json
+scripts/test-projects-v4-flow.js
+scripts/test-v4-release-and-source.js
+security-manager.js

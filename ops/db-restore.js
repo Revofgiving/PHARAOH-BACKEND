@@ -21,6 +21,7 @@ function validateRestoreRequest(args = process.argv.slice(2)) {
 }
 
 function executeRestore(file, spawn = spawnSync) {
+  require('./v4-release-gate').assertReleaseAllowed();
   validateDatabaseUrl();
   const request = validateRestoreRequest([
     '--execute',

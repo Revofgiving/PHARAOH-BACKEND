@@ -1,0 +1,13 @@
+'use strict';
+const assert=require('node:assert/strict');
+const {compare,TABLES}=require('../ops/v4-data-preservation');
+const h=(arr)=>({count:arr.length,rowHashes:arr});
+const base={version:1,tables:Object.fromEntries(TABLES.map(t=>[t,h(['a','b'])]))};
+const more={version:1,tables:Object.fromEntries(TABLES.map(t=>[t,h(['b','a','c'])]))};
+assert.equal(compare(base,more),true);
+const deleted=structuredClone(more);deleted.tables.accounts=h(['a']);
+assert.throws(()=>compare(base,deleted),/RECORDS_REMOVED/);
+const modified=structuredClone(more);modified.tables.posizioni=h(['a','x','c']);
+assert.throws(()=>compare(base,modified),/CHANGED_OR_DELETED/);
+assert.throws(()=>compare({...base,version:2},more),/INVALID_SNAPSHOT/);
+console.log('V4_DATA_PRESERVATION_TESTS_PASS');

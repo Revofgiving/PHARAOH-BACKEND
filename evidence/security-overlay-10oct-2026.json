@@ -1,0 +1,18 @@
+{
+  "type": "SECURITY_DEPENDENCY_OVERLAY",
+  "date": "2026-10-10",
+  "baseCheckpoint": "PHARAOH_BACKEND_DIRECT_1TO1_E2E_9_OTTOBRE_2026_NON_DEPLOY",
+  "historicalBaselinePreserved": true,
+  "file": "package-lock.json",
+  "historicalSha256": "2bdda87c8970482782bffadfa230c1407fd76693c88aabbd2c7e559c4d1aadc5",
+  "approvedSha256": "3f5e5e8c98c4f696a4defe3f2c882b496b9c16b56da809b0ead7a6c639b37900",
+  "reason": "npm audit fix applied after clean npm ci during pre-deploy certification",
+  "resolved": {
+    "multer": "2.4.0",
+    "proxy-addr": "2.0.8",
+    "qs": "6.16.0",
+    "ip-address": "10.7.3"
+  },
+  "auditResult": "0 vulnerabilities",
+  "direct1to1AfterUpdate": "PASS 15/15"
+}

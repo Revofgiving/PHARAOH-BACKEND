@@ -1,4 +1,10 @@
-PHARAOH backend patch 15 settembre 2026
-Applicare questi file sopra il clone pulito del repository, preservando le directory.
-Prima del commit eseguire: npm ci, npm test (se disponibile), node scripts/test-direct-gift-static.js, node scripts/test-migration-compat.js, node ops/deploy-preflight.js static.
-Non contiene node_modules, .env, chiavi o segreti.
+PHARAOH BACKEND V4 - DEPLOYABLE RELEASE
+
+LEGGERE PRIMA: 00_DEPLOYABLE_RELEASE_README_13_OTTOBRE_2026.md
+
+Questa release sostituisce i checkpoint storici NON DEPLOY dell'8-9 ottobre.
+Il release gate corrente e fail-closed ma ALLOW per questa release certificata V4.
+Docker build: gate + preflight statico.
+Container startup: gate -> preflight produzione -> preflight integrazioni read-only -> migrazioni -> API.
+
+NON resettare il database esistente. NON inserire chiavi private nel repository.

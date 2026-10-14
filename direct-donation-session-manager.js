@@ -6,6 +6,9 @@ const pg = require('./pg-connection-manager');
 const WALLET_RE = /^0x[a-f0-9]{40}$/;
 const HASH_RE = /^0x[a-f0-9]{64}$/;
 const SESSION_RE = /^0x[a-f0-9]{64}$/;
+const DIRECT_ROG_PROTOCOL = 'ROG_DIRECT_CYCLE_1TO1_V2';
+const ROG_ELIGIBILITY_WINDOW_MS = 60 * 60 * 1000;
+const ROG_FRESHNESS_SKEW_MS = 5 * 1000;
 
 function makeError(message, code) {
   const error = new Error(message);
@@ -35,6 +38,27 @@ function asJsonObject(value) {
   if (!value) return {};
   if (typeof value === 'object') return value;
   try { return JSON.parse(value); } catch (_) { return {}; }
+}
+
+function proofBlockTimeMs(proof) {
+  const value = Number(proof?.blockTimestamp);
+  return Number.isFinite(value) && value > 0 ? value * 1000 : null;
+}
+
+function assertStrictCycleProofFreshness(row, proof, label) {
+  if (row?.rog_eligibility_source !== DIRECT_ROG_PROTOCOL) return null;
+  const startedMs = new Date(row.created_at || 0).getTime();
+  const proofMs = proofBlockTimeMs(proof);
+  if (!Number.isFinite(startedMs) || proofMs == null) {
+    throw makeError(`Timestamp blockchain ${label} non verificabile`, 'DIRECT_ROG_FRESHNESS_UNVERIFIABLE');
+  }
+  if (proofMs + ROG_FRESHNESS_SKEW_MS < startedMs) {
+    throw makeError(
+      `La prova ${label} ROG precede l'apertura del ciclo PHARAOH e non puo essere riutilizzata`,
+      'DIRECT_ROG_PROOF_NOT_FRESH'
+    );
+  }
+  return proofMs;
 }
 
 function publicSession(row) {
@@ -154,6 +178,8 @@ async function recordRogPaymentConfirmed({ sessionRef, wallet, amountUsdc, usdcT
     throw makeError('La sessione e gia associata a una tx ROG differente', 'DIRECT_SESSION_PROOF_CONFLICT');
   }
 
+  assertStrictCycleProofFreshness(row, proof, 'pagamento 2 USDC');
+
   const existingProof = asJsonObject(row.rog_proof);
   const earlyStatuses = new Set(['COMMUNITY_CONFIRMED', 'ROG_CONFIRMING', 'ROG_PAYMENT_CONFIRMED']);
   const nextStatus = earlyStatuses.has(String(row.status)) ? 'ROG_PAYMENT_CONFIRMED' : row.status;
@@ -212,7 +238,17 @@ async function recordRogRegistration({ sessionRef, wallet, registerTxHash, donat
     throw makeError('La sessione e gia associata a un donationId differente', 'DIRECT_SESSION_PROOF_CONFLICT');
   }
 
+  const registrationMs = assertStrictCycleProofFreshness(row, proof, 'registerDonation');
   const existingProof = asJsonObject(row.rog_proof);
+  if (row.rog_eligibility_source === DIRECT_ROG_PROTOCOL) {
+    const paymentMs = proofBlockTimeMs(existingProof.usdc);
+    if (paymentMs == null) {
+      throw makeError('Prova blockchain del pagamento ROG mancante', 'DIRECT_ROG_PROOF_REQUIRED');
+    }
+    if (registrationMs + ROG_FRESHNESS_SKEW_MS < paymentMs) {
+      throw makeError('registerDonation ROG precede il pagamento ROG del ciclo corrente', 'DIRECT_ROG_PROOF_ORDER_INVALID');
+    }
+  }
   return updateSession(sessionRef, {
     rog_register_tx_hash: canonicalHash,
     rog_donation_id: id,
@@ -227,7 +263,7 @@ async function recordRogRegistration({ sessionRef, wallet, registerTxHash, donat
   }, client);
 }
 
-function extractHumanPosition(rogResult, expectedWallet = null) {
+function extractHumanPositionRecord(rogResult, expectedWallet = null) {
   const completion = rogResult?.completion || rogResult || {};
   const positions = Array.isArray(completion?.positions?.posizioni)
     ? completion.positions.posizioni
@@ -235,11 +271,15 @@ function extractHumanPosition(rogResult, expectedWallet = null) {
       ? completion.posizioni
       : [];
   const wallet = expectedWallet ? normalizeWallet(expectedWallet) : null;
-  const human = positions.find((position) => {
+  return positions.find((position) => {
     if (String(position?.tipo || '').toUpperCase() !== 'HUMAN') return false;
     if (!wallet) return true;
     try { return normalizeWallet(position?.wallet) === wallet; } catch (_) { return false; }
-  });
+  }) || null;
+}
+
+function extractHumanPosition(rogResult, expectedWallet = null) {
+  const human = extractHumanPositionRecord(rogResult, expectedWallet);
   const value = Number(human?.posizione);
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
@@ -257,14 +297,16 @@ async function markRogFulfillmentProcessing(sessionRef, client = null) {
 
 async function recordRogFulfillmentCompleted({ sessionRef, wallet, rogResult }, client = null) {
   const row = await requireSession(sessionRef, wallet, client);
-  const humanPosition = extractHumanPosition(rogResult, wallet);
+  const humanRecord = extractHumanPositionRecord(rogResult, wallet);
+  const humanPosition = Number(humanRecord?.posizione);
   if (!Number.isSafeInteger(humanPosition) || humanPosition <= 0) {
     throw makeError(
       'ROG ha dichiarato COMPLETED ma non ha restituito una posizione HUMAN valida per il wallet della sessione',
       'DIRECT_ROG_HUMAN_POSITION_REQUIRED'
     );
   }
-  return updateSession(sessionRef, {
+
+  const fields = {
     rog_result: rogResult || null,
     rog_human_position: humanPosition,
     rog_confirmed_at: row.rog_confirmed_at || new Date().toISOString(),
@@ -273,7 +315,28 @@ async function recordRogFulfillmentCompleted({ sessionRef, wallet, rogResult }, 
     rog_fulfillment_next_retry_at: null,
     rog_fulfillment_updated_at: new Date().toISOString(),
     last_error: null
-  }, client);
+  };
+
+  if (row.rog_eligibility_source === DIRECT_ROG_PROTOCOL) {
+    const cycleStartedMs = new Date(row.created_at || 0).getTime();
+    const humanCreatedMs = new Date(humanRecord?.created_at || '').getTime();
+    if (!Number.isFinite(cycleStartedMs) || !Number.isFinite(humanCreatedMs)) {
+      throw makeError(
+        'La nuova HUMAN ROG deve avere created_at verificabile per il ciclo DIRECT 1:1',
+        'DIRECT_ROG_HUMAN_FRESHNESS_UNVERIFIABLE'
+      );
+    }
+    if (humanCreatedMs + ROG_FRESHNESS_SKEW_MS < cycleStartedMs) {
+      throw makeError(
+        'La HUMAN ROG restituita precede il ciclo PHARAOH corrente e non puo essere riutilizzata',
+        'DIRECT_ROG_HUMAN_NOT_FRESH'
+      );
+    }
+    fields.rog_eligibility_completed_at = new Date(humanCreatedMs).toISOString();
+    fields.rog_eligibility_expires_at = new Date(humanCreatedMs + ROG_ELIGIBILITY_WINDOW_MS).toISOString();
+  }
+
+  return updateSession(sessionRef, fields, client);
 }
 
 async function recordRogFulfillmentError(sessionRef, error, client = null) {
@@ -325,11 +388,23 @@ async function recordRogConfirmed({ sessionRef, wallet, amountUsdc, usdcTxHash, 
 async function recordPharaohVerified({ sessionRef, wallet, amountUsdc, txHash, proof }, client = null) {
   const row = await requireSession(sessionRef, wallet, client);
   if (!['ROG_PAYMENT_CONFIRMED', 'ROG_CONFIRMED', 'PHARAOH_VERIFIED', 'REGISTRY_SUBMITTED', 'REGISTRY_CONFIRMED'].includes(row.status)) {
-    throw makeError('Il pagamento ROG da 2 USDC della sessione non e confermato', 'ROG_PAYMENT_REQUIRED');
+    throw makeError('Il ciclo ROG della sessione non e confermato', 'ROG_PAYMENT_REQUIRED');
   }
   if (!row.rog_usdc_tx_hash || !row.rog_payment_confirmed_at) {
     throw makeError('Prova on-chain del pagamento ROG mancante', 'ROG_PAYMENT_PROOF_REQUIRED');
   }
+
+  if (row.rog_eligibility_source === DIRECT_ROG_PROTOCOL) {
+    const human = Number(row.rog_human_position);
+    const rogProof = asJsonObject(row.rog_proof);
+    if (row.rog_fulfillment_status !== 'COMPLETED' || !Number.isSafeInteger(human) || human <= 0 || !row.rog_confirmed_at) {
+      throw makeError('La nuova HUMAN ROG dedicata al ciclo non e completata', 'DIRECT_ROG_POSITION_REQUIRED');
+    }
+    if (!row.rog_register_tx_hash || !row.rog_donation_id || !rogProof.usdc || !rogProof.registration) {
+      throw makeError('Prove complete del nuovo ciclo ROG mancanti', 'DIRECT_ROG_PROOF_REQUIRED');
+    }
+  }
+
   return updateSession(sessionRef, {
     status: ['ROG_PAYMENT_CONFIRMED', 'ROG_CONFIRMED'].includes(row.status) ? 'PHARAOH_VERIFIED' : row.status,
     pharaoh_amount_usdc: Number(amountUsdc),
@@ -374,9 +449,15 @@ async function recordError(sessionRef, error, client = null) {
 }
 
 module.exports = {
+  DIRECT_ROG_PROTOCOL,
+  ROG_ELIGIBILITY_WINDOW_MS,
+  ROG_FRESHNESS_SKEW_MS,
   normalizeWallet,
   normalizeHash,
   normalizeSessionRef,
+  asJsonObject,
+  proofBlockTimeMs,
+  assertStrictCycleProofFreshness,
   publicSession,
   createSession,
   getSession,
@@ -390,6 +471,7 @@ module.exports = {
   recordRogFulfillmentError,
   listRogFulfillmentPending,
   extractHumanPosition,
+  extractHumanPositionRecord,
   recordRogConfirmed,
   recordPharaohVerified,
   recordRegistrySubmitted,

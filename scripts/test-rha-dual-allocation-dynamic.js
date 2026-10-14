@@ -3,8 +3,13 @@
 const assert = require('node:assert/strict');
 const Module = require('node:module');
 
+const {EconomicLedger}=require('../economic-ledger');
+const {MemoryHarness,MemoryEconomicStore}=require('./support/economic-memory-store');
+const {exitKeys}=require('../economic-flow');
+const A=require('../economic-amounts');
 const originalLoad = Module._load;
 Module._load = function patchedLoad(request, parent, isMain) {
+  if (request === './economic-ledger' && parent?.filename?.endsWith('cross-outbound-manager.js')) return {configuredLedger(c){return new EconomicLedger(new MemoryEconomicStore(c.harness),{});}};
   if (request === 'ethers') return { ethers: {} };
   if (request === 'dotenv') return { config() { return {}; } };
   if (request === './pg-connection-manager' && (parent?.filename?.endsWith('cross-outbound-manager.js') || parent?.filename?.endsWith('pharaoh-registry-manager.js'))) {
@@ -18,7 +23,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
 };
 
 const outbound = require('../cross-outbound-manager');
-Module._load = originalLoad;
+// The scoped loader is restored after all runtime calls.
 
 const PHARAOH = '0x1111111111111111111111111111111111111111';
 const ROG = '0x2222222222222222222222222222222222222222';
@@ -43,13 +48,16 @@ process.env.URANUS_CROSS_PLATFORM_SECRET = 'u'.repeat(40);
 
 function clone(row) { return JSON.parse(JSON.stringify(row)); }
 
-function fakeScheduleClient({ preexistingAllocation = null, preexistingOperations = [] } = {}) {
+function fakeScheduleClient({ preexistingAllocation = null, preexistingOperations = [], event='PHARAOH:RHA:TURN:77:EXIT' } = {}) {
+  const harness=new MemoryHarness(); harness.inTransaction=true;
+  const keys=exitKeys(preexistingAllocation?.rha_event_key || event);
+  for(const target of ['ROG','URANUS']){const amount=preexistingAllocation?.[target.toLowerCase()+'_usdc'] || (target==='ROG'?300:200);harness.data.buckets.set(keys[target],{bucket_key:keys[target],wallet:PHARAOH,purpose:'RHA_'+target,balance_atomic:A.usdc(String(amount)).toString(),metadata:{}});}
   const state = {
     allocation: preexistingAllocation ? clone(preexistingAllocation) : null,
     operations: new Map(preexistingOperations.map(row => [row.event_key, clone(row)]))
   };
   return {
-    state,
+    state,harness,
     async query(sql, params) {
       const normalized = String(sql).replace(/\s+/g, ' ').trim();
       if (normalized.startsWith('INSERT INTO rha_exit_allocations')) {
@@ -146,6 +154,7 @@ async function testFreshV2Schedule() {
   assert.deepEqual(retry.operations.map(op => [op.eventKey, op.amountUsdc, op.positionsExpected]),
     result.operations.map(op => [op.eventKey, op.amountUsdc, op.positionsExpected]));
   assert.equal(client.state.operations.size, 2, 'retry non deve creare operazioni duplicate');
+  assert.equal(client.harness.data.movements.size,2,'actual ledger binds exactly two distinct reserves');
 }
 
 async function testLegacyV1RemainsHistorical() {
@@ -219,7 +228,7 @@ async function testNotifyPayloadUsesBeneficiaryAndNewRates() {
             rgxOwnerWallet: PHARAOH,
             rgxMinted: 150
           }
-        : { success: true };
+        : { success: true, status: 'COMPLETED' };
       return { ok: true, status: 200, async json() { return payload; } };
     });
     assert.equal(captured.wallet_origine, PHARAOH);
@@ -245,4 +254,4 @@ async function testNotifyPayloadUsesBeneficiaryAndNewRates() {
   console.error('FAIL RHA DUAL DYNAMIC');
   console.error(error && error.stack ? error.stack : error);
   process.exitCode = 1;
-});
+}).finally(()=>{Module._load=originalLoad;});

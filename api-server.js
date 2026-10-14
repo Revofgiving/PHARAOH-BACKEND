@@ -5,6 +5,8 @@
  * Protetto dal Security Manager con 10 livelli di sicurezza.
  */
 
+require('./ops/v4-release-gate').assertReleaseAllowed();
+
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 const express = require('express');
@@ -22,6 +24,7 @@ const payoutManager  = require('./payout-manager');
 const rogCommunity = require('./rog-community-manager');
 const rogDonation = require('./rog-donation-manager');
 const directDonation = require('./direct-donation-manager');
+const directEligibility = require('./direct-rog-eligibility-manager');
 const giftFlow = require('./gift-flow-manager');
 const crossAuth = require('./cross-platform-auth');
 const crossEntry = require('./cross-entry-manager');
@@ -129,19 +132,33 @@ app.use(async (req, res, next) => {
 });
 
 // 9. DONATION KILL SWITCH — blocca soltanto i nuovi flussi di dono.
-// Le API di consultazione (Area Personale, stato, contenuti) restano disponibili.
+// Merge chirurgico dal pannello amministrativo Isa (2 ottobre 2026).
+// Le API di consultazione, l'attivazione di Carte Regalo gia pagate e i recovery restano disponibili.
 const isDonationMutation = (req) => {
   if (req.method !== 'POST') return false;
   const path = req.path;
+
+  // DIRECT: autorizzazione/start, passaggi ROG e pagamento PHARAOH.
+  if (path === '/api/donazione/diretta/authorize') return true;
+  if (path === '/api/donazione/diretta/session') return true;
+  if (path.startsWith('/api/donazione/diretta/rog/')) return true;
+  if (path === '/api/donazione/entrata/wallet') return true;
+
+  // Carta Regalo Smartbox: blocca il nuovo finanziamento, NON il riscatto/attivazione del beneficiario.
+  if (path === '/api/gift/smartbox/create') return true;
+  if (/^\/api\/gift\/smartbox\/[^/]+\/rog\/(payment|register)$/.test(path)) return true;
+  if (/^\/api\/gift\/smartbox\/[^/]+\/pharaoh\/payment$/.test(path)) return true;
+
+  // Compatibilita Carta Regalo legacy ancora esposta dal backend.
+  if (path === '/api/gift/create') return true;
+  if (/^\/api\/gift\/[^/]+\/rog\/(external\/verify|payment|register)$/.test(path)) return true;
+  if (/^\/api\/gift\/[^/]+\/pharaoh\/payment$/.test(path)) return true;
+
+  // Cross entry e route legacy/admin che creano nuovi doni PHARAOH.
   return (
-    path === '/api/donazione/diretta/session' ||
-    path.startsWith('/api/donazione/diretta/rog/') ||
-    path === '/api/donazione/entrata/wallet' ||
+    path === '/api/cross/donation/entrata' ||
     path === '/api/donazione/entrata' ||
-    path === '/api/donazione/pharaoh' ||
-    path === '/api/gift/create' ||
-    /^\/api\/gift\/[^/]+\/(rog\/(external\/verify|payment|register)|pharaoh\/payment)$/.test(path) ||
-    path === '/api/cross/donation/entrata'
+    path === '/api/donazione/pharaoh'
   );
 };
 
@@ -163,13 +180,13 @@ app.use(async (req, res, next) => {
     return res.status(503).json({
       success: false,
       code: 'DONATION_GATE_UNAVAILABLE',
-      error: 'Stato donazioni non verificabile. Riprovare più tardi.'
+      error: 'Stato donazioni non verificabile. Riprovare piu tardi.'
     });
   }
   next();
 });
 
-// Stato pubblico, sola lettura: permette al frontend di mostrare subito il banner.
+// Stato pubblico di sola lettura per banner/guard frontend.
 app.get('/api/donazioni/stato', async (_req, res) => {
   try {
     const stato = await db.getStatoBloccoDonazioni();
@@ -181,7 +198,11 @@ app.get('/api/donazioni/stato', async (_req, res) => {
         : 'DONAZIONI ATTIVE'
     });
   } catch (e) {
-    res.status(503).json({ success: false, code: 'DONATION_GATE_UNAVAILABLE', error: security.sanitizeError(e) });
+    res.status(503).json({
+      success: false,
+      code: 'DONATION_GATE_UNAVAILABLE',
+      error: security.sanitizeError(e)
+    });
   }
 });
 
@@ -355,9 +376,8 @@ app.get('/api/account/:wallet/posizioni', async (req, res) => {
         COALESCE(
           ep.numero_posizionale,
           CASE
-            WHEN t.sezione = 'ENTRATA' AND t.livello = 0
-            THEN (((t.numero - 1) * 6) + p.casella)::bigint
-            ELSE NULL
+            WHEN t.sezione = 'ENTRATA' AND t.livello = 0 THEN p.numero_posizionale
+            ELSE a.numero_posizionale
           END
         ) AS numero_posizionale,
         ep.entrata_tavola_numero,
@@ -715,6 +735,40 @@ app.post('/api/rog/community/register', async (req, res) => {
 // DIRECT — 2 USDC ROG + 100 USDC PHARAOH = 1 posizione
 // ========================================
 
+// Stato DIRECT 1:1: il wallet da solo NON puo' far scoprire/consumare HUMAN storiche.
+// L'eligibility deriva esclusivamente da una sessione PHARAOH aperta prima del nuovo ciclo ROG.
+app.get('/api/donazione/diretta/eligibility/:wallet', async (req, res) => {
+  try {
+    const wallet = security.validateWallet(req.params.wallet);
+    res.json(await directEligibility.getEligibility(wallet));
+  } catch (e) {
+    security.securityLog('DIRECT_ELIGIBILITY_ERROR', e.message, req.ip);
+    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'DIRECT_ELIGIBILITY_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
+  }
+});
+
+// Seconda verifica obbligatoria immediatamente prima di aprire il pagamento PHARAOH.
+app.post('/api/donazione/diretta/authorize', security.donationLimiter, async (req, res) => {
+  try {
+    const wallet = security.validateWallet(req.body.wallet);
+    const sessionRef = String(req.body.sessionRef || '').trim();
+    res.json(await directEligibility.authorize(wallet, sessionRef));
+  } catch (e) {
+    security.securityLog('DIRECT_AUTHORIZATION_ERROR', e.message, req.ip);
+    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'DIRECT_AUTHORIZATION_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
+  }
+});
+
+app.post('/api/donazione/diretta/authorize/release', security.donationLimiter, async (req, res) => {
+  try {
+    const wallet = security.validateWallet(req.body.wallet);
+    const sessionRef = String(req.body.sessionRef || '').trim();
+    res.json(await directEligibility.release(wallet, sessionRef));
+  } catch (e) {
+    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'DIRECT_AUTHORIZATION_RELEASE_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
+  }
+});
+
 app.post('/api/donazione/diretta/session',
   security.donationLimiter,
   async (req, res) => {
@@ -863,17 +917,72 @@ app.post('/api/donazione/entrata/wallet',
 // CARTA REGALO — pagatore distinto dal beneficiario
 // ========================================
 
-app.post('/api/gift/create', security.donationLimiter, async (req, res) => {
+
+// SMARTBOX 30-09-2026: acquisto senza beneficiario, attivazione successiva con codice.
+app.post('/api/gift/smartbox/create', security.donationLimiter, async (req, res) => {
   try {
     const paymentWallet = security.validateWallet(req.body.paymentWallet || req.body.donor, 'paymentWallet');
-    const beneficiaryWallet = req.body.beneficiaryWallet ? security.validateWallet(req.body.beneficiaryWallet, 'beneficiaryWallet') : null;
     const giftMessage = security.sanitizeString(req.body.giftMessage, 500);
-    const result = await giftFlow.createGift({ giftId: req.body.giftId || null, paymentWallet, beneficiaryWallet, giftMessage });
-    res.status(result.created ? 201 : 200).json(result);
+    const result = await giftFlow.createSmartboxGift({ paymentWallet, giftMessage });
+    res.status(201).json(result);
   } catch (e) {
-    security.securityLog('GIFT_CREATE_ERROR', e.message, req.ip);
-    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'GIFT_CREATE_ERROR', retryable: e.retryable === true, giftId: e.giftId || null, error: security.sanitizeError(e) });
+    security.securityLog('GIFT_SMARTBOX_CREATE_ERROR', e.message, req.ip);
+    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'GIFT_SMARTBOX_CREATE_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
   }
+});
+
+app.post('/api/gift/smartbox/:giftId/rog/payment', security.donationLimiter, async (req, res) => {
+  try {
+    const paymentWallet = security.validateWallet(req.body.paymentWallet || req.body.donor, 'paymentWallet');
+    const rogUsdcTxHash = security.validateTxHash(req.body.rogUsdcTxHash || req.body.txHash);
+    res.json(await giftFlow.confirmSmartboxRogPayment({ giftId: req.params.giftId, paymentWallet, rogUsdcTxHash }));
+  } catch (e) {
+    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'GIFT_SMARTBOX_ROG_PAYMENT_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
+  }
+});
+
+app.post('/api/gift/smartbox/:giftId/rog/register', security.donationLimiter, async (req, res) => {
+  try {
+    const paymentWallet = security.validateWallet(req.body.paymentWallet || req.body.donor, 'paymentWallet');
+    const rogRegisterTxHash = security.validateTxHash(req.body.rogRegisterTxHash || req.body.registerTxHash);
+    const rogDonationId = String(req.body.rogDonationId || req.body.donationId || '').trim();
+    res.json(await giftFlow.confirmSmartboxRogRegistration({ giftId: req.params.giftId, paymentWallet, rogRegisterTxHash, rogDonationId }));
+  } catch (e) {
+    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'GIFT_SMARTBOX_ROG_REGISTER_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
+  }
+});
+
+app.post('/api/gift/smartbox/:giftId/pharaoh/payment', security.donationLimiter, async (req, res) => {
+  try {
+    const paymentWallet = security.validateWallet(req.body.paymentWallet || req.body.donor, 'paymentWallet');
+    const pharaohTxHash = security.validateTxHash(req.body.pharaohTxHash || req.body.txHash);
+    res.json(await giftFlow.confirmSmartboxPharaohPayment({ giftId: req.params.giftId, paymentWallet, pharaohTxHash }));
+  } catch (e) {
+    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'GIFT_SMARTBOX_PHARAOH_PAYMENT_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
+  }
+});
+
+app.post('/api/gift/smartbox/redeem', security.donationLimiter, async (req, res) => {
+  try {
+    const beneficiaryWallet = security.validateWallet(req.body.beneficiaryWallet || req.body.wallet, 'beneficiaryWallet');
+    const beneficiaryName = security.sanitizeNome(req.body.beneficiaryName || req.body.nome);
+    const giftCode = String(req.body.giftCode || '').trim();
+    res.json(await giftFlow.redeemSmartboxGift({ giftCode, beneficiaryWallet, beneficiaryName }));
+  } catch (e) {
+    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'GIFT_SMARTBOX_REDEEM_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
+  }
+});
+
+app.post('/api/gift/smartbox/status', async (req, res) => {
+  try { res.json(await giftFlow.getSmartboxByCode({ giftCode: String(req.body.giftCode || '').trim() })); }
+  catch (e) { res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'GIFT_SMARTBOX_STATUS_ERROR', error: security.sanitizeError(e) }); }
+});
+
+
+app.post('/api/gift/create', security.donationLimiter, async (req, res) => {
+  // 30-09-2026: nuove Carte Regalo esclusivamente modello Smartbox.
+  // Gli endpoint legacy restano disponibili solo per recovery di sessioni storiche gia esistenti.
+  return res.status(410).json({ success: false, code: 'GIFT_SMARTBOX_REQUIRED', error: 'Nuove Carte Regalo: usare il flusso Smartbox con codice di attivazione.' });
 });
 
 app.post('/api/gift/:giftId/rog/external/verify', security.donationLimiter, async (req, res) => {
@@ -1028,6 +1137,8 @@ app.post('/api/admin/cross/uranus/reconcile', security.requireAdminKey, async (r
     res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'URANUS_RECONCILIATION_ERROR', error: security.sanitizeError(e) });
   }
 });
+
+require('./economic-admin').registerEconomicAdmin(app, security);
 
 // Recovery generico delle operazioni post-COMMIT Entrata gia persistite.
 // Utile anche quando una URANUS_TO_PHARAOH ha gia assegnato le posizioni ma
@@ -1216,7 +1327,7 @@ app.post('/api/admin/sblocca',
 
 /**
  * Kill switch dedicato alle DONAZIONI.
- * Non spegne le API di consultazione e non cancella operazioni già confermate.
+ * Non spegne consultazioni, Area Personale, pannello admin o recovery gia esistenti.
  */
 app.get('/api/admin/donazioni/stato',
   security.requireAdminKey,
@@ -1510,11 +1621,14 @@ async function start() {
     }
   }
 
+  require('./economic-worker').startEconomicWorker();
   startCrossOutboundWorker();
   startRogFulfillmentWorker();
   startPayoutRegistryWorker();
 
-  app.listen(PORT, () => {
+  giftFlow.startSmartboxExpiryReconciler();
+
+app.listen(PORT, () => {
     console.log(`\n🌐 Server PHARAOH in ascolto su http://localhost:${PORT}`);
     console.log(`\n📋 Endpoint principali:`);
     console.log(`   GET  /api/health              → Health check`);

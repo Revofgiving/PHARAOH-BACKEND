@@ -13,6 +13,32 @@ function makeError(message, code, retryable = false) {
   return error;
 }
 
+function proofBlockTimeMs(proof) {
+  const value = Number(proof?.blockTimestamp);
+  return Number.isFinite(value) && value > 0 ? value * 1000 : null;
+}
+
+function assertFreshCycleProof(row, proof, label) {
+  if (row?.rog_eligibility_source !== sessions.DIRECT_ROG_PROTOCOL) {
+    throw makeError(
+      'Questa sessione non appartiene al protocollo DIRECT 1:1 corrente: aprire un nuovo ciclo prima di donare in ROG',
+      'DIRECT_FRESH_ROG_CYCLE_REQUIRED'
+    );
+  }
+  const startedMs = new Date(row.created_at || 0).getTime();
+  const proofMs = proofBlockTimeMs(proof);
+  if (!Number.isFinite(startedMs) || proofMs == null) {
+    throw makeError(`Timestamp blockchain ${label} non verificabile`, 'DIRECT_ROG_FRESHNESS_UNVERIFIABLE');
+  }
+  if (proofMs + sessions.ROG_FRESHNESS_SKEW_MS < startedMs) {
+    throw makeError(
+      `La prova ${label} ROG precede l'apertura del ciclo PHARAOH e non puo essere riutilizzata`,
+      'DIRECT_ROG_PROOF_NOT_FRESH'
+    );
+  }
+  return proofMs;
+}
+
 async function withAdvisoryLock(key, operation, dependencies = {}) {
   const db = dependencies.pg || pg;
   const client = await db.getClient();
@@ -41,8 +67,62 @@ async function startSession(wallet, dependencies = {}) {
   const w = sessionManager.normalizeWallet(wallet);
   await communityManager.assertCommunityMember(w);
   const cfg = rog.getConfig();
-  const row = await sessionManager.createSession(w, cfg.amountUsdc);
-  return { success: true, session: sessionManager.publicSession(row) };
+  if (Number(cfg.amountUsdc) !== 2) {
+    throw makeError('DIRECT richiede esattamente 2 USDC ROG per ogni nuova posizione PHARAOH', 'DIRECT_SESSION_ROG_AMOUNT_INVALID');
+  }
+
+  return withAdvisoryLock(`PHARAOH:DIRECT:WALLET:${w}`, async (client) => {
+    await client.query('BEGIN');
+    try {
+      const existingResult = await client.query(
+        `SELECT *
+           FROM direct_donation_sessions
+          WHERE LOWER(wallet)=LOWER($1)
+            AND rog_eligibility_source=$2
+            AND status NOT IN ('POSITION_ASSIGNED','CANCELLED')
+          ORDER BY created_at DESC
+          LIMIT 1
+          FOR UPDATE`,
+        [w, sessionManager.DIRECT_ROG_PROTOCOL]
+      );
+      let existing = existingResult.rows[0] || null;
+
+      if (existing && !existing.pharaoh_tx_hash && existing.rog_eligibility_expires_at) {
+        const expiresMs = new Date(existing.rog_eligibility_expires_at).getTime();
+        if (Number.isFinite(expiresMs) && Date.now() >= expiresMs) {
+          await client.query(
+            `UPDATE direct_donation_sessions
+                SET status='CANCELLED', rog_claimed_at=NULL, rog_claim_expires_at=NULL,
+                    last_error='ROG_PROOF_EXPIRED_NEW_CYCLE_REQUIRED', updated_at=NOW()
+              WHERE session_ref=$1`,
+            [existing.session_ref]
+          );
+          existing = null;
+        }
+      }
+
+      if (existing) {
+        await client.query('COMMIT');
+        return {
+          success: true,
+          idempotent: true,
+          recovery: !!existing.pharaoh_tx_hash,
+          session: sessionManager.publicSession(existing)
+        };
+      }
+
+      const row = await sessionManager.createSession(w, cfg.amountUsdc, client);
+      const marked = await sessionManager.updateSession(row.session_ref, {
+        rog_eligibility_source: sessionManager.DIRECT_ROG_PROTOCOL,
+        last_error: null
+      }, client);
+      await client.query('COMMIT');
+      return { success: true, idempotent: false, session: sessionManager.publicSession(marked) };
+    } catch (error) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
+      throw error;
+    }
+  }, dependencies);
 }
 
 async function getSessionForWallet(sessionRef, wallet, dependencies = {}) {
@@ -87,6 +167,7 @@ async function _confirmRogPaymentLocked({ wallet, sessionRef, rogUsdcTxHash }, c
     wallet: w,
     amountUsdc: expectedAmount
   });
+  assertFreshCycleProof(row, usdcProof, 'pagamento 2 USDC');
 
   const updated = await sessionManager.recordRogPaymentConfirmed({
     sessionRef,
@@ -157,6 +238,12 @@ async function _recordRogRegistrationLocked({ wallet, sessionRef, rogRegisterTxH
     amountUsdc: expectedAmount,
     donationId: canonicalDonationId
   });
+  const registrationMs = assertFreshCycleProof(row, registrationProof, 'registerDonation');
+  const existingProof = sessionManager.asJsonObject(row.rog_proof);
+  const paymentMs = proofBlockTimeMs(existingProof.usdc);
+  if (paymentMs != null && registrationMs + sessionManager.ROG_FRESHNESS_SKEW_MS < paymentMs) {
+    throw makeError('registerDonation ROG precede il pagamento ROG del ciclo corrente', 'DIRECT_ROG_PROOF_ORDER_INVALID');
+  }
 
   const updated = await sessionManager.recordRogRegistration({
     sessionRef,
@@ -268,6 +355,9 @@ async function verifyRogPositionForSession({ wallet, sessionRef, rogPosition }, 
   const rogApi = dependencies.rogApi || community;
   const row = await sessionManager.requireSession(sessionRef, wallet);
   const w = sessionManager.normalizeWallet(wallet);
+  if (row.rog_eligibility_source !== sessionManager.DIRECT_ROG_PROTOCOL && !row.pharaoh_tx_hash) {
+    throw makeError('Serve un nuovo ciclo ROG dedicato a questa posizione PHARAOH', 'DIRECT_FRESH_ROG_CYCLE_REQUIRED');
+  }
   const requested = Number(rogPosition || row.rog_human_position || 0);
   if (!Number.isSafeInteger(requested) || requested <= 0) {
     throw makeError('Nuova posizione ROG non ancora disponibile', 'ROG_POSITION_NOT_FOUND', true);
@@ -284,7 +374,11 @@ async function verifyRogPositionForSession({ wallet, sessionRef, rogPosition }, 
     throw makeError('ROG temporaneamente non disponibile per la verifica posizione', 'ROG_POSITION_VERIFY_RETRY', true);
   }
   const found = Array.isArray(live?.posizioni)
-    ? live.posizioni.find((p) => Number(p?.posizione) === requested && String(p?.wallet || '').toLowerCase() === w)
+    ? live.posizioni.find((p) =>
+      Number(p?.posizione) === requested &&
+      String(p?.wallet || '').toLowerCase() === w &&
+      String(p?.tipo || 'HUMAN').toUpperCase() === 'HUMAN'
+    )
     : null;
   if (!found) throw makeError('La nuova posizione ROG non risulta intestata al wallet della sessione', 'ROG_POSITION_NOT_FOUND', true);
 
@@ -380,20 +474,25 @@ async function processRogFulfillmentPending(limit = 5, dependencies = {}) {
 
 async function assertReadyForPharaoh({ wallet, sessionRef }, dependencies = {}) {
   const eligibilityManager = dependencies.eligibility || eligibility;
-  const isInjectedTestPath = !dependencies.eligibility && (dependencies.sessions || dependencies.community || dependencies.rogApi);
-  if (!isInjectedTestPath) {
-    const claimed = await eligibilityManager.assertClaimReady(wallet, sessionRef);
-    if (claimed) return claimed;
-  }
   const communityManager = dependencies.community || community;
   const sessionManager = dependencies.sessions || sessions;
   const w = sessionManager.normalizeWallet(wallet);
+
+  const claimed = await eligibilityManager.assertClaimReady(w, sessionRef, dependencies);
+  if (claimed?.alreadyCompleted) return claimed;
+
   await communityManager.assertCommunityMember(w);
-  const row = await sessionManager.requireSession(sessionRef, w);
+  const row = claimed?.session || await sessionManager.requireSession(sessionRef, w);
   if (row.status === 'POSITION_ASSIGNED') return { alreadyCompleted: true, session: row };
 
+  if (row.rog_eligibility_source !== sessionManager.DIRECT_ROG_PROTOCOL && !row.pharaoh_tx_hash) {
+    throw makeError(
+      'Una HUMAN ROG storica non abilita una nuova posizione PHARAOH: serve una nuova donazione ROG per questo ciclo',
+      'DIRECT_FRESH_ROG_CYCLE_REQUIRED'
+    );
+  }
   if (row.rog_fulfillment_status !== 'COMPLETED') {
-    throw makeError('Prima dei 100 USDC PHARAOH deve essere completata la nuova posizione ROG.', 'DIRECT_ROG_POSITION_REQUIRED', true);
+    throw makeError('Prima dei 100 USDC PHARAOH deve essere completata la nuova HUMAN ROG del ciclo.', 'DIRECT_ROG_POSITION_REQUIRED', true);
   }
   const humanPosition = Number(row.rog_human_position);
   if (!Number.isSafeInteger(humanPosition) || humanPosition <= 0) {
@@ -402,15 +501,14 @@ async function assertReadyForPharaoh({ wallet, sessionRef }, dependencies = {}) 
   if (!row.rog_usdc_tx_hash || !row.rog_payment_confirmed_at || !row.rog_register_tx_hash || !row.rog_donation_id || !row.rog_confirmed_at) {
     throw makeError('Prove complete ROG mancanti per questa nuova posizione', 'DIRECT_ROG_PROOF_REQUIRED', true);
   }
-  const proof = row.rog_proof && typeof row.rog_proof === 'object'
-    ? row.rog_proof
-    : (() => { try { return JSON.parse(row.rog_proof || '{}'); } catch (_) { return {}; } })();
+  const proof = sessionManager.asJsonObject(row.rog_proof);
   if (!proof.usdc || !proof.registration) {
     throw makeError('Prove on-chain ROG incomplete', 'DIRECT_ROG_PROOF_REQUIRED', true);
   }
 
   return {
     alreadyCompleted: false,
+    recovery: claimed?.recovery === true,
     rogFulfillmentPending: false,
     rogHumanPosition: humanPosition,
     session: row

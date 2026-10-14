@@ -1,0 +1,17 @@
+'use strict';
+const assert=require('node:assert/strict'),audit=require('../ops/v4-data-preservation'),A=require('../economic-amounts');
+const {compareForwardData}=require('../ops/economic-schema-review');
+const tables={};for(const name of audit.TABLES)tables[audit.key('public',name)]={schema:'public',name,kind:'r',columns:[{name:'id',type:'bigint',notNull:true}],constraints:[{name:'test_constraint',hash:'b'.repeat(64),validated:true}],count:1,rowHashes:[audit.hashCells(['1'])]};
+const b={version:2,format:audit.FORMAT,sourceFingerprint:'a'.repeat(64),tables,sequences:{}};
+let cases=0;const clone=()=>structuredClone(b),k=audit.key('public','posizioni');
+let r=compareForwardData(b,clone());assert.equal(r.historicalRowsPreserved,true);assert.equal(r.schemaReviewRequired,false);assert.equal(r.authorizesDeployment,false);cases++;
+let a=clone();a.tables[k].columns[0].notNull=false;r=compareForwardData(b,a);assert.equal(r.schemaReviewRequired,true);assert.equal(r.schemaChanges[0].kind,'NULLABILITY');assert.equal(r.schemaApproved,false);assert.throws(()=>audit.compare(b,a),/COLUMN_CHANGED/);cases++;
+a=clone();a.tables[k].constraints[0].hash='c'.repeat(64);r=compareForwardData(b,a);assert.equal(r.schemaChanges[0].kind,'CONSTRAINT');cases++;
+a=clone();a.tables[k].rowHashes=[audit.hashCells(['2'])];assert.throws(()=>compareForwardData(b,a),/HISTORICAL_ROW/);cases++;
+a=clone();a.tables[k].rowHashes=[];a.tables[k].count=0;assert.throws(()=>compareForwardData(b,a),/HISTORICAL_ROW/);cases++;
+a=clone();a.tables[k].rowHashes.push(audit.hashCells(['2']));a.tables[k].count=2;assert.equal(compareForwardData(b,a).checkedRows,10);cases++;
+a=clone();a.tables[k].columns.push({name:'extra',type:'text',notNull:false});assert.throws(()=>compareForwardData(b,a),/COLUMN_PROJECTION/);cases++;
+a=clone();a.sourceFingerprint='d'.repeat(64);assert.throws(()=>compareForwardData(b,a),/DIFFERENT_DATABASE/);cases++;
+a=clone();a.tables[audit.key('public','new_ledger')]={...structuredClone(a.tables[k]),name:'new_ledger',count:0,rowHashes:[]};r=compareForwardData(b,a);assert.equal(r.schemaChanges[0].kind,'NEW_TABLE');cases++;
+const sb=clone(),sk=audit.key('public','seq');sb.sequences[sk]={schema:'public',name:'seq',increment:'1',definition:A.digest('seq'),lastValue:'10',isCalled:true};a=structuredClone(sb);a.sequences[sk].lastValue='9';assert.throws(()=>compareForwardData(sb,a),/SEQUENCE_MOVED_BACKWARDS/);cases++;
+console.log(JSON.stringify({test:'economic-schema-review',status:'PASS',cases,scope:'synthetic V2 snapshots; NO real PostgreSQL comparison, DDL review or release approval'}));

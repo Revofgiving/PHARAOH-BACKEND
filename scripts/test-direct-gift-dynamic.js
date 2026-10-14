@@ -15,7 +15,7 @@ const ROG_TX = `0x${'e'.repeat(64)}`;
 const PHARAOH_TX = `0x${'1'.repeat(64)}`;
 const GIFT_ID = `gift_${'g'.repeat(24)}`;
 
-const directSessionStub = {};
+const directSessionStub = { DIRECT_ROG_PROTOCOL: 'ROG_DIRECT_CYCLE_1TO1_V2', ROG_FRESHNESS_SKEW_MS: 5000, asJsonObject: v => (v && typeof v === 'object' ? v : {}) };
 const giftSessionStub = {};
 const rogGiftStub = {};
 const rogCommunityStub = {};
@@ -48,7 +48,7 @@ function fakeLockPg() {
   };
 }
 
-async function testDirectPaymentOnlyOpensPharaohGate() {
+async function testDirectPaymentOnlyStaysLockedUntilFreshHuman() {
   const calls = [];
   let row = {
     session_ref: SESSION,
@@ -61,9 +61,14 @@ async function testDirectPaymentOnlyOpensPharaohGate() {
     rog_register_tx_hash: null,
     rog_donation_id: null,
     rog_fulfillment_status: 'WAITING_PAYMENT',
-    rog_human_position: null
+    rog_human_position: null,
+    rog_eligibility_source: directSessionStub.DIRECT_ROG_PROTOCOL,
+    created_at: new Date(Date.now() - 1000).toISOString()
   };
   const sessions = {
+    DIRECT_ROG_PROTOCOL: directSessionStub.DIRECT_ROG_PROTOCOL,
+    ROG_FRESHNESS_SKEW_MS: directSessionStub.ROG_FRESHNESS_SKEW_MS,
+    asJsonObject: directSessionStub.asJsonObject,
     normalizeWallet: x => String(x).toLowerCase(),
     normalizeHash: x => String(x).toLowerCase(),
     async requireSession() { return { ...row }; },
@@ -88,7 +93,7 @@ async function testDirectPaymentOnlyOpensPharaohGate() {
     rogDonation: {
       async verifyRogUsdcTransfer() {
         calls.push('usdc');
-        return { txHash: ROG_TX, from: WALLET, amountUsdc: 2, blockNumber: 100, confirmations: 2 };
+        return { txHash: ROG_TX, from: WALLET, amountUsdc: 2, blockNumber: 100, blockTimestamp: Math.floor(Date.now() / 1000), confirmations: 2 };
       }
     }
   });
@@ -99,7 +104,10 @@ async function testDirectPaymentOnlyOpensPharaohGate() {
   await assert.rejects(
     () => direct.assertReadyForPharaoh({ wallet: WALLET, sessionRef: SESSION }, {
       community: { async assertCommunityMember() {} },
+      eligibility: { async assertClaimReady() { return { alreadyCompleted: false, session: { ...row } }; } },
       sessions: {
+        DIRECT_ROG_PROTOCOL: directSessionStub.DIRECT_ROG_PROTOCOL,
+        asJsonObject: directSessionStub.asJsonObject,
         normalizeWallet: x => String(x).toLowerCase(),
         async requireSession() { return { ...row }; }
       }
@@ -149,7 +157,7 @@ async function testGiftSmartboxRequiresBeneficiaryCommunity() {
 }
 
 (async () => {
-  await testDirectPaymentOnlyOpensPharaohGate();
+  await testDirectPaymentOnlyStaysLockedUntilFreshHuman();
   await testGiftSmartboxRequiresBeneficiaryCommunity();
   console.log('PASS DIRECT: 2 USDC ROG verificati non aprono il gate finche la HUMAN ROG non e COMPLETED');
   console.log('PASS GIFT SMARTBOX: il beneficiario non puo attivare il codice senza Community ROG personale');

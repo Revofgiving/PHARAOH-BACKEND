@@ -140,7 +140,43 @@
       "id": "0022_cassa_posizione_completa",
       "description": "Cassa PHARAOH come posizione ENTRATA completa: account autonomo, numero posizionale, sdoppiamento, progressione, Funzioni e doni; riconciliazione live delle Casse gia inserite",
       "file": "database/0022_cassa_posizione_completa.sql",
-      "sha256": "1e78baf17ebe367332ed99254605b045d13831c57727cd9bda44ef91da86327f"
+      "sha256": "85bcabd00bd2fb904f8d7d895a0976ff602d7736a9ed9e3e5c9eac9d232f8358"
+    },
+    {
+      "id": "0023_direct_rog_wallet_eligibility_60m",
+      "description": "DIRECT: stato ricostruibile dal wallet, HUMAN ROG monouso, finestra 60 minuti da completamento HUMAN e doppia autorizzazione pre-pagamento",
+      "file": "database/0023_direct_rog_wallet_eligibility_60m.sql",
+      "sha256": "c7660ba81c8a1d5305f686e4f563aea797fb80666f491486af919dd67b561219"
+    },
+    {
+      "id": "0024_gift_smartbox_activation",
+      "description": "Carta Regalo Smartbox: 102 USDC prepagati, codice monouso, Community beneficiario entro 3 mesi e fallback automatico al regalante",
+      "file": "database/0024_gift_smartbox_activation.sql",
+      "sha256": "dc22a705924c5d0da3cc7736cbc741d214a18da7eefb5f54927a34167a9c489a"
+    },
+    {
+      "id": "0025_entry_global_progressive_with_function_reservations",
+      "description": "ENTRATA: progressivo globale 1->infinito indipendente da tavola/casella; prenotazioni Funzioni consumano il numero, Cassa dopo 5 HUMAN reali",
+      "file": "database/0025_entry_global_progressive_with_function_reservations.sql",
+      "sha256": "2fc2c8c4bb1f950a0fc41c3001c9e35a8f798a4e2211176b04192997158e20cd"
+    },
+    {
+      "id": "0026_economic_ledger_s0",
+      "description": "Additive settled-value journal, protected reserves, S0 membership, classified roots and durable transfer outbox; activation defaults PENDING",
+      "file": "database/0026_economic_ledger_s0.sql",
+      "sha256": "2ad31f69559973b8c4dd4c42d604327ad73ca9789f2790b18ea1a148257ca61d"
+    },
+    {
+      "id": "0027_continuity_non_genealogical",
+      "description": "Continuity reservation and position without wallet, account, number or genealogy; no historical row rewrite",
+      "file": "database/0027_continuity_non_genealogical.sql",
+      "sha256": "a6d6494042685e6e7199357c01b038598dc639dbca09da824a922d8e7b05b28a"
+    },
+    {
+      "id": "0028_secondary_function_identity_scope",
+      "description": "Scope progressivo identita funzionali: SIMBIONTE wallet-global, PERPETUO/GEMELLO per account origine condividendo il wallet reale",
+      "file": "database/0028_secondary_function_identity_scope.sql",
+      "sha256": "710b9528ca7a6ba64e8807e13aad5b521b69233bb72245b0407842f3f29ca6af"
     }
   ]
 }

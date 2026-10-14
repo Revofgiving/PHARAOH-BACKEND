@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { prepareMigrationSql } = require('./migration-transaction-policy');
 
 const ROOT = path.resolve(__dirname, '..');
 const PLAN_PATH = path.join(ROOT, 'database', 'migration-plan.json');
@@ -37,7 +38,8 @@ function loadPlan() {
     if (actualChecksum !== item.sha256) {
       throw new Error(`CHECKSUM_FILE_MIGRAZIONE_NON_VALIDO:${item.id}`);
     }
-    return Object.freeze({ ...item, acceptedAppliedSha256, absolutePath, sql, checksum: actualChecksum });
+    const projection = prepareMigrationSql({ ...item, sql });
+    return Object.freeze({ ...item, acceptedAppliedSha256, absolutePath, sql, checksum: actualChecksum, ...projection });
   });
 }
 
@@ -118,6 +120,7 @@ async function status(poolModule) {
 }
 
 async function migrate(poolModule) {
+  require('./v4-release-gate').assertReleaseAllowed();
   const plan = loadPlan();
   return withClient(async client => {
     await client.query('SELECT pg_advisory_lock($1::bigint)', [LOCK_KEY]);
@@ -135,7 +138,8 @@ async function migrate(poolModule) {
       const comparison = comparePlan(plan, applied);
       assertConsistent(comparison);
       for (const item of comparison.pending) {
-        await client.query(item.sql);
+        // The caller owns BEGIN/COMMIT. Historical SQL bytes/checksums stay intact.
+        await client.query(item.executionSql);
         await client.query(
           `INSERT INTO pharaoh_schema_migrations (id, checksum, description)
            VALUES ($1, $2, $3)`,
@@ -164,6 +168,7 @@ async function cli() {
   if (mode === 'plan') {
     const plan = loadPlan();
     for (const item of plan) console.log(`PENDING_OR_APPLIED ${item.id} ${item.checksum}`);
+    console.log(`TRANSACTION_WRAPPERS_NORMALIZED_AT_EXECUTION: ${plan.filter(item => item.transactionNormalization !== 'NONE').length}`);
     console.log(`MIGRATION_PLAN_OK: ${plan.length}`);
     return;
   }

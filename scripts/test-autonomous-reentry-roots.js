@@ -1,278 +1,31 @@
 'use strict';
-
-const assert = require('node:assert/strict');
-const Module = require('node:module');
-const fs = require('node:fs');
-const path = require('node:path');
-
-const ROOT = path.resolve(__dirname, '..');
-const rules = require(path.join(ROOT, 'rules-engine.js'));
-
-async function runCase({ source, count, sourceId, sourceSigla, tipo }) {
-  const wallet = '0x1111111111111111111111111111111111111111';
-  const eventKey = `${source}_AUTONOMOUS_ROOT_TEST`;
-  const rootsByKey = new Map();
-  const rootsById = new Map();
-  const createdInputs = [];
-  const placements = [];
-  const postCommit = [];
-  let nextId = 10000;
-  let nextNumeroPosizionale = source === 'THOT_REENTRY' ? 501 : 1001;
-  let activeTurn = 1;
-  let occupied = 0;
-  let entryStarts = 0;
-
-  const sourceAccount = {
-    id: sourceId,
-    wallet,
-    nome: `${tipo} SOURCE`,
-    tipo,
-    sigla: sourceSigla,
-    root_account_id: 23
-  };
-
-  const dbStub = {
-    async getAccountByIdentity(identity) {
-      assert.equal(Number(identity.accountId), sourceId);
-      assert.equal(String(identity.wallet).toLowerCase(), wallet);
-      assert.equal(identity.sigla, sourceSigla);
-      return { ...sourceAccount };
-    },
-    async getAccountByKey(key) {
-      return rootsByKey.get(key) || null;
-    },
-    async createAccount(input) {
-      assert.equal(input.wallet, wallet);
-      assert.equal(input.tipo, 'PRIMARIO');
-      assert.equal(input.parentAccountId, null);
-      assert.equal(input.rootAccountId, null);
-      assert.equal(input.sourceAccountId, sourceId);
-      assert.equal(input.sourceEventKey, eventKey);
-      assert.equal(input.originKind, source);
-      const row = {
-        id: nextId++,
-        wallet: input.wallet,
-        nome: input.nome,
-        tipo: input.tipo,
-        sigla: input.sigla,
-        account_key: input.accountKey,
-        parent_account_id: null,
-        root_account_id: null,
-        source_account_id: input.sourceAccountId,
-        source_event_key: input.sourceEventKey,
-        origin_kind: input.originKind,
-        numero_posizionale: null
-      };
-      rootsByKey.set(input.accountKey, row);
-      rootsById.set(row.id, row);
-      createdInputs.push({ ...input, id: row.id });
-      return { ...row };
-    },
-    async setAccountNumeroPosizionale(id, numero, _client, options = {}) {
-      const row = rootsById.get(Number(id));
-      assert.ok(row, `Radice ${id} deve esistere`);
-      row.numero_posizionale = Number(numero);
-      if (options.setSiglaIfNull && !row.sigla) row.sigla = String(numero);
-      row.root_account_id = row.id;
-      return { ...row };
-    },
-    async syncEntryPlacementIdentity() { return { ok: true }; },
-    async updateAccountIdentity(id, updates) {
-      const row = rootsById.get(Number(id));
-      row.sigla = updates.sigla;
-      row.root_account_id = updates.rootAccountId;
-      return { ...row };
-    },
-    async getTurnoCorrente(sezione, livello) {
-      assert.equal(sezione, 'ENTRATA');
-      assert.equal(livello, 0);
-      return {
-        id: 2000 + activeTurn,
-        numero_turno: activeTurn,
-        faraone_wallet: `0x${String(7000 + activeTurn).padStart(40, '0')}`,
-        faraone_account_id: 9000 + activeTurn,
-        faraone_sigla: String(400 + activeTurn),
-        status: 'IN_CORSO'
-      };
-    },
-    async incrementSacerdotiEntrati() {
-      return { ok: true };
-    },
-    async getAccountById(id) {
-      return {
-        id: Number(id),
-        wallet: `0x${String(7000 + activeTurn).padStart(40, '0')}`,
-        nome: `EREDE_${activeTurn}`,
-        tipo: 'PRIMARIO',
-        sigla: String(400 + activeTurn)
-      };
-    },
-    async getAccount(walletArg) {
-      return {
-        id: 9000 + activeTurn,
-        wallet: String(walletArg).toLowerCase(),
-        nome: `EREDE_${activeTurn}`,
-        tipo: 'PRIMARIO',
-        sigla: String(400 + activeTurn)
-      };
-    },
-    async createPostCommitOperation(op) {
-      postCommit.push(JSON.parse(JSON.stringify(op)));
-      return op;
-    }
-  };
-
-  const tableStub = {
-    async getTavolaPercorsoAttiva(livello, turno) {
-      assert.equal(livello, 0);
-      assert.equal(turno, activeTurn);
-      return {
-        id: 3000 + activeTurn,
-        numero: 600 + activeTurn,
-        livello: 0,
-        turno: activeTurn,
-        faraone_wallet: `0x${String(7000 + activeTurn).padStart(40, '0')}`,
-        faraone_account_id: 9000 + activeTurn,
-        faraone_sigla: String(400 + activeTurn),
-        status: 'APERTA'
-      };
-    },
-    async posizionaDonatore(input) {
-      assert.equal(String(input.wallet).toLowerCase(), wallet);
-      assert.equal(input.livello, 0);
-      assert.equal(input.donoImporto, 100);
-      assert.equal(input.sdoppiabile, true);
-      assert.ok(Number.isInteger(Number(input.accountId)) && Number(input.accountId) !== sourceId);
-      assert.equal(input.accountSigla, null, 'La sigla numerica nasce dalla posizione fisica, non prima');
-
-      occupied += 1;
-      const complete = occupied === 6;
-      const numeroPosizionaleGlobale = ((600 + activeTurn - 1) * 6) + occupied;
-      const result = {
-        casellaOccupata: occupied,
-        numeroPosizionaleGlobale,
-        posizione: { id: 70000 + placements.length + 1, numero_posizionale: numeroPosizionaleGlobale },
-        tavolaCompleta: complete,
-        tavolaSdoppiamento: {
-          id: 50000 + placements.length + 1,
-          numero: 60000 + placements.length + 1,
-          faraone_account_id: Number(input.accountId),
-          faraone_sigla: input.accountSigla
-        }
-      };
-      placements.push({
-        wallet: String(input.wallet).toLowerCase(),
-        accountId: Number(input.accountId),
-        accountSigla: input.accountSigla,
-        turno: Number(input.turno),
-        tavolaId: Number(input.tavolaId),
-        casella: occupied,
-        personalTableId: result.tavolaSdoppiamento.id,
-        completed: complete
-      });
-      if (complete) occupied = 0;
-      return result;
-    }
-  };
-
-  const donationFlowStub = {
-    async avviaNuovoTurnoEntrata(turnoChiuso) {
-      assert.equal(Number(turnoChiuso.numero_turno), activeTurn);
-      activeTurn += 1;
-      entryStarts += 1;
-      // Dalla Tavola 2 in poi il turno apre con il riporto reale da 100 USDC
-      // della Cassa PHARAOH, che occupa una casella ma non e una radice rientro.
-      occupied = 1;
-    }
-  };
-
-  const originalLoad = Module._load;
-  Module._load = function(request, parent, isMain) {
-    const parentFile = parent && path.resolve(parent.filename);
-    if (parentFile === path.join(ROOT, 'reentry-manager.js')) {
-      if (request === './db-manager') return dbStub;
-      if (request === './table-manager') return tableStub;
-      if (request === './rules-engine') return rules;
-      if (request === './donation-flow-manager') return donationFlowStub;
-    }
-    return originalLoad.call(this, request, parent, isMain);
-  };
-
-  const reentryPath = require.resolve(path.join(ROOT, 'reentry-manager.js'));
-  delete require.cache[reentryPath];
-  try {
-    const reentryManager = require(reentryPath);
-    const result = await reentryManager.materializzaRientriEntrata({
-      source,
-      eventKey,
-      wallet,
-      nome: 'OWNER',
-      sourceAccountId: sourceId,
-      sourceAccountSigla: sourceSigla,
-      count,
-      client: { query: async () => ({ rows: [] }) }
-    });
-
-    assert.equal(result.length, count);
-    assert.equal(createdInputs.length, count);
-    assert.equal(placements.length, count);
-    assert.equal(new Set(result.map(x => x.accountId)).size, count, 'Ogni rientro deve avere account_id autonomo');
-    assert.equal(new Set(result.map(x => x.numeroPosizionale)).size, count, 'Ogni rientro deve avere numero posizionale autonomo');
-    assert.equal(new Set(result.map(x => x.sigla)).size, count, 'Ogni rientro deve avere sigla radice autonoma');
-    assert.equal(new Set(result.map(x => x.personalTableId)).size, count, 'Ogni rientro deve avere tavola personale autonoma');
-    assert.ok(result.every(x => x.wallet === wallet), 'Tutti i rientri devono restare sul wallet MetaMask originale');
-    assert.ok(result.every(x => x.accountId !== sourceId), 'La radice rientro non deve riusare account_id del Secondario sorgente');
-    assert.ok(result.every(x => x.sourceAccountId === sourceId && x.sourceAccountSigla === sourceSigla));
-    assert.ok(result.every(x => String(x.numeroPosizionale) === x.sigla), 'Sigla radice deve essere il numero posizionale Entrata');
-    assert.ok(placements.every((p, i) => p.accountId === result[i].accountId && p.accountSigla === null));
-    assert.ok(createdInputs.every(x => x.wallet === wallet && x.tipo === 'PRIMARIO' && x.parentAccountId === null));
-    assert.ok(createdInputs.every(x => x.sourceAccountId === sourceId && x.sourceEventKey === eventKey && x.originKind === source));
-
-    const completed = placements.filter(p => p.completed).length;
-    assert.equal(postCommit.length, completed);
-    assert.equal(entryStarts, completed);
-    assert.ok(postCommit.every(op => op.operationType === 'USCITA_ENTRATA_POST_COMMIT'));
-    assert.ok(postCommit.every(op => op.payload.source === source));
-    assert.ok(postCommit.every(op => Number.isInteger(Number(op.payload.eredeAccountId))));
-
-    return { result, placements, postCommit, entryStarts };
-  } finally {
-    delete require.cache[reentryPath];
-    Module._load = originalLoad;
-  }
+// Replaces the obsolete receiver-owned-HUMAN fixture. Original is preserved in
+// evidence/legacy-tests-5oct. Runs the real funded materializer, not PostgreSQL.
+const assert=require('node:assert/strict'),Module=require('node:module');
+const A=require('../economic-amounts'),{EconomicLedger}=require('../economic-ledger');
+const {EconomicFlow}=require('../economic-flow'),{S0Materializer}=require('../s0-materializer');
+const {MemoryHarness,memoryPlacement}=require('./support/economic-memory-store');
+const reentry=require('../reentry-manager');
+const T='0x'+'1'.repeat(40),F='0x'+'2'.repeat(40),U='0x'+'3'.repeat(40),P='0x'+'4'.repeat(40);
+const config={treasuryWallet:T,fundAWallet:F,projectsWallet:P};
+const original=Module._load;let activeFlow=null,cases=0;
+Module._load=function(name,parent,main){if(name==='./economic-flow'&&parent?.filename.endsWith('/reentry-manager.js'))return {configuredFlow(client){assert.ok(client);assert.ok(activeFlow);return activeFlow;}};return original.call(this,name,parent,main);};
+async function scenario(level,type){
+ const h=new MemoryHarness({human:30n}),id='9000',key=`${level}:${type}`;
+ h.data.nextAccount=100;
+ h.data.accounts.set(id,{id,wallet:U,tipo:type,sigla:'23.1'});
+ h.data.economics.set(id,{account_id:id,root_account_id:'23',position_class:'HUMAN',owner_wallet:U,custody_wallet:U});
+ const bucket=level==='THOT'?'L4_TURN:1':'L5_TURN:1';
+ h.data.buckets.set(bucket,{bucket_key:bucket,wallet:T,purpose:'TURN',metadata:{},balance_atomic:A.usdc(level==='THOT'?'15000':'30000').toString()});
+ async function run(fn){return h.transaction(async store=>{const ledger=new EconomicLedger(store,config);activeFlow=new EconomicFlow({ledger,materializer:new S0Materializer({ledger,placement:memoryPlacement(h),config}),config});return fn(activeFlow);});}
+ await run(f=>f.planExit({eventKey:key,level,turn:{id:1,numero_turno:1,sacerdoti_entrati:3,sacerdoti_necessari:3},account:h.data.accounts.get(id)}));
+ const input={source:level+'_REENTRY',eventKey:key,sourceAccountId:id,count:level==='THOT'?5:50,client:{fixture:true}};
+ const result=await run(()=>reentry.materializzaRientriEntrata(input));
+ assert.equal(result.length,input.count);assert.equal(new Set(result.map(p=>p.accountId)).size,input.count);
+ assert.equal(new Set(result.map(p=>p.numeroPosizionale)).size,input.count);
+ for(const row of result){const e=h.data.economics.get(String(row.accountId));assert.equal(e.root_account_id,String(row.accountId));assert.notEqual(e.root_account_id,'23');assert.equal(row.automaticReceiverReentry,false);assert.ok(row.tavolaPersonale.id);assert.ok(row.ownerWallet===null||row.ownerWallet===F);assert.notEqual(row.ownerWallet,U);const n=BigInt(row.numeroPosizionale);assert.ok(n<26n||(n-26n)%14n!==0n);}
+ assert.equal(h.data.counters.human_cumulative,'30');assert.equal(result.filter(x=>x.positionClass==='PILETTA').length,Math.min(input.count,30));cases++;
+ const before=structuredClone(h.data);assert.deepEqual(await run(()=>reentry.materializzaRientriEntrata(input)),result);assert.deepEqual(h.data,before);cases++;
+ await assert.rejects(run(()=>reentry.materializzaRientriEntrata({...input,count:input.count+1})),/QUOTA_INVALID/);cases++;
 }
-
-(async () => {
-  const thot = await runCase({
-    source: 'THOT_REENTRY',
-    count: 5,
-    sourceId: 900,
-    sourceSigla: '23.1',
-    tipo: 'PERPETUO'
-  });
-  assert.deepEqual(thot.placements.map(x => x.casella), [1, 2, 3, 4, 5]);
-  assert.equal(thot.entryStarts, 0);
-
-  const iside = await runCase({
-    source: 'ISIDE_REENTRY',
-    count: 50,
-    sourceId: 901,
-    sourceSigla: '1-23',
-    tipo: 'GEMELLO'
-  });
-  assert.equal(iside.entryStarts, 9);
-  assert.equal(iside.placements.filter(x => x.completed).length, 9);
-  assert.equal(iside.placements.slice(-2)[0].turno, 10);
-  assert.equal(iside.placements.slice(-2)[1].turno, 10);
-
-  const flow = fs.readFileSync(path.join(ROOT, 'donation-flow-manager.js'), 'utf8');
-  assert.ok(flow.includes('eredeAccountId: eredeAccount.id'));
-  assert.ok(flow.includes('await posizionaSacerdoteInPharaoh(wallet, nomeErede, client, eredeIdentity);'));
-  assert.ok(flow.includes('if (prossimaTavolaFaraone.faraone_account_id)'));
-
-  console.log('PASS AUTONOMOUS REENTRY: THOT 5/5 e ISIDE 50/50 = nuove radici Entrata autonome, numero posizionale/sigla/account_id distinti, stesso wallet MetaMask');
-  console.log('PASS AUTONOMOUS REENTRY: ogni radice crea la propria tavola personale; con riporto Cassa dalla Tavola 2, ISIDE attraversa 9 chiusure e continua nella decima tavola');
-})().catch(error => {
-  console.error(error);
-  process.exitCode = 1;
-});
+(async()=>{await assert.rejects(reentry.materializzaRientriEntrata({}),/TRANSACTION_REQUIRED/);cases++;for(const level of ['THOT','ISIDE'])for(const type of ['PERPETUO','GEMELLO'])await scenario(level,type);console.log(JSON.stringify({test:'autonomous-system-roots',status:'PASS',cases,scope:'actual funding/flow/materializer/wrapper with memory storage; no receiver-owned automatic HUMAN roots, no PostgreSQL'}));})().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>{Module._load=original;});

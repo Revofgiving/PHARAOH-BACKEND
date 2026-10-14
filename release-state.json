@@ -1,0 +1,53 @@
+{
+  "buildId": "PHARAOH_BACKEND_11_OTTOBRE_2026_REGISTRY_V4_PROJECTS_DEPLOYABLE_FINAL",
+  "releaseDate": "2026-10-13",
+  "deployable": true,
+  "migrationAllowed": true,
+  "registryContractId": "PHARAOH_TREASURY_REGISTRY_V4",
+  "registryAbiVersion": "4.0.0",
+  "migrationCount": 28,
+  "original25MigrationsUnchanged": true,
+  "current28SqlMigrationsUnchanged": true,
+  "newSqlMigrationsThisRelease": 0,
+  "testSummary": {
+    "PASS": 52,
+    "FAIL": 0,
+    "BLOCKED_DEPENDENCY": 0,
+    "TIMEOUT": 0
+  },
+  "testTotal": 52,
+  "npmTestExitCode": 0,
+  "releaseGate": {
+    "policyVersion": 1,
+    "status": "ALLOW",
+    "failClosed": true,
+    "environmentOverrideAllowed": false,
+    "productionPreflightRequired": true,
+    "integrationPreflightRequired": true,
+    "databaseMigrationRunsAfterPreflight": true
+  },
+  "certificationScope": "Local source/unit/mock/forensic certification. Production activation additionally requires the packaged fail-closed production and integration preflights against ISA's real environment.",
+  "productionAccessed": false,
+  "realTransfersSubmitted": 0,
+  "dockerImageBuiltInCertificationEnvironment": false,
+  "deploymentPrerequisites": [
+    "Deploy and verify PharaohRegistry V4 before starting the backend",
+    "Configure production environment variables and secrets only in Coolify",
+    "Create/verify a database backup or snapshot before deployment",
+    "Run packaged production preflight and read-only integration preflight",
+    "Preserve the existing PostgreSQL database; do not reset it",
+    "Verify PROJECTS:STRUCTURAL_CAPITAL is coherent before enabling Projects outgoing operations"
+  ],
+  "direct1to1": {
+    "invariant": "1 NEW ROG donation -> 1 NEW HUMAN ROG -> 1 PHARAOH position",
+    "protocol": "ROG_DIRECT_CYCLE_1TO1_V2",
+    "historicalHumanAccepted": false,
+    "secondPharaohPositionRequiresNewRogCycle": true
+  },
+  "projects": {
+    "wallet": "0x7Efb00d35Db624aDe83781B3eF0b67A74e49275c",
+    "defaultSigningMode": "MANUAL",
+    "maxOutgoingUsdc": 50000,
+    "structuralCapitalUsdc": 100
+  }
+}

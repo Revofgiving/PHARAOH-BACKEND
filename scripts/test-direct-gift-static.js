@@ -42,6 +42,13 @@ function main() {
   assert.ok(directMgr.includes('verifyExternalRogReturn'), 'Verifica server-side del ritorno ROG mancante');
   assert.ok(directMgr.includes("row.rog_fulfillment_status !== 'COMPLETED'"), 'Gate PHARAOH deve richiedere fulfillment ROG COMPLETED');
   assert.ok(directMgr.includes('row.rog_human_position'), 'Gate PHARAOH deve richiedere posizione HUMAN ROG persistita');
+  assert.ok(directMgr.includes('ROG_DIRECT_CYCLE_1TO1_V2') || directSession.includes('ROG_DIRECT_CYCLE_1TO1_V2'), 'DIRECT deve marcare il protocollo causale 1:1');
+  assert.ok(directMgr.includes('assertFreshCycleProof'), 'DIRECT deve rifiutare prove ROG precedenti all apertura del ciclo PHARAOH');
+  assert.ok(directSession.includes('DIRECT_ROG_HUMAN_NOT_FRESH'), 'DIRECT deve rifiutare HUMAN ROG precedenti al ciclo corrente');
+  assert.ok(api.includes('directEligibility.authorize(wallet, sessionRef)'), 'Authorize DIRECT deve essere legato alla sessionRef esplicita');
+  const eligibility = read('direct-rog-eligibility-manager.js');
+  assert.ok(!eligibility.includes('bindPosition('), 'Eligibility non deve creare sessioni da HUMAN scoperte per wallet');
+  assert.ok(!eligibility.includes('/api/user-positions/${encodeURIComponent(w)}') || eligibility.includes('assertClaimReady'), 'La lista HUMAN ROG non deve essere usata per auto-bind wallet-only');
   assert.ok(directSession.includes('if (amount !== 2)'), 'DIRECT ROG deve essere esattamente 2 USDC');
   assert.match(directMigration, /rog_amount_usdc[^\n]+CHECK \(rog_amount_usdc = 2\)/);
   const asyncMigration = read('database/0015_direct_rog_async_gate.sql');
@@ -90,7 +97,7 @@ function main() {
   assert.ok(rogGift.includes('Number(completion.rgxMinted) !== units'), 'Gift deve verificare RGX = importo/2');
   assert.ok(rogGift.includes('count !== expected || list.length !== expected'), 'Gift deve verificare HUMAN = importo/2');
   assert.ok(verifiedEntry.includes("const ALLOWED_SOURCES = new Set(['GIFT'])"), 'Verified entry deve accettare solo Gift');
-  assert.ok(verifiedEntry.includes('wallet: beneficiary'), 'Posizione Gift deve essere del beneficiario');
+  assert.ok(verifiedEntry.includes('beneficiaryWallet:beneficiary'), 'Posizione Gift deve essere del beneficiario');
   assert.ok(verifiedEntry.includes('donorWallet: payer'), 'Donazione Gift deve conservare il pagatore');
   assert.ok(verifiedEntry.includes('beneficiaryWallet: beneficiary'), 'Donazione Gift deve conservare il beneficiario');
 

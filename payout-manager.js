@@ -73,44 +73,9 @@ function shouldBypassPayout() {
   return process.env.NODE_ENV !== 'production' && process.env.PAYOUT_DEV_MODE === '1';
 }
 
-async function sendUsdc({ toWallet, importo }) {
-  const destinatario = normalizeWallet(toWallet, 'toWallet');
-  const amountNumber = Number(importo);
-  if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
-    throw new Error('Importo payout non valido');
-  }
-  if (shouldBypassPayout()) {
-    const fake = `DEV_TX_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-    return { txHash: fake, simulated: true };
-  }
-
-  const usdcAddress = process.env.USDC_CONTRACT_ADDRESS;
-  if (!usdcAddress) throw new Error('USDC_CONTRACT_ADDRESS non configurato');
-
-  // Un'unica chiave PHARAOH firma sia i payout utente sia i movimenti RHA.
-  // Il lock PostgreSQL condiviso serializza il signer tra processi/repliche e
-  // impedisce collisioni di nonce con cross-outbound-manager.
-  const lockClient = await pg.getClient();
-  let locked = false;
-  try {
-    await lockClient.query('SELECT pg_advisory_lock(hashtext($1))', [GLOBAL_PAYOUT_SIGNER_LOCK]);
-    locked = true;
-    const wallet = getPayoutWallet();
-    const contract = new ethers.Contract(usdcAddress, ERC20_ABI, wallet);
-    const amount = ethers.parseUnits(String(amountNumber), USDC_DECIMALS);
-    const tx = await contract.transfer(destinatario, amount);
-    const minConfirmations = Math.max(1, Number(process.env.POLYGON_MIN_CONFIRMATIONS || 1));
-    const receipt = await tx.wait(minConfirmations);
-    if (!receipt || Number(receipt.status) !== 1) {
-      throw new Error('Transazione fallita on-chain');
-    }
-    return { txHash: String(tx.hash).toLowerCase(), simulated: false };
-  } finally {
-    if (locked) {
-      try { await lockClient.query('SELECT pg_advisory_unlock(hashtext($1))', [GLOBAL_PAYOUT_SIGNER_LOCK]); } catch (_) { /* release finale */ }
-    }
-    lockClient.release();
-  }
+async function sendUsdc({ dono }) {
+  if (!dono?.id) throw new Error('PAYOUT_ACCEPTED_RECORD_REQUIRED');
+  return require('./payout-economic-adapter').prepareAndRun(dono);
 }
 
 async function createPendingGift({
@@ -133,6 +98,19 @@ async function createPendingGift({
   const queryOne = client
     ? async (sql, params) => (await client.query(sql, params)).rows[0] || null
     : pg.queryOne;
+  if (!client) throw new Error('PAYOUT_CREATION_TRANSACTION_REQUIRED');
+  await require('./economic-ledger').configuredLedger(client).ready();
+  const existing = await queryOne('SELECT * FROM doni_pendenti WHERE event_key=$1 FOR UPDATE',[eventKey]);
+  if (existing) {
+    if (existing.wallet !== w || Number(existing.importo) !== amount || Number(existing.livello) !== Number(livello)
+      || String(existing.account_id) !== String(accountId) || String(existing.account_sigla || '') !== String(accountSigla || '')
+      || String(existing.tipo_uscita) !== String(tipoUscita) || String(existing.tipo_account || '') !== String(tipoAccount || ''))
+      throw new Error('PAYOUT_EXISTING_EVENT_CONFLICT');
+    const details = typeof existing.dettagli === 'string' ? JSON.parse(existing.dettagli) : existing.dettagli;
+    if (details?.economicReserveBucket !== dettagli?.economicReserveBucket) throw new Error('PAYOUT_EXISTING_RESERVE_CONFLICT');
+    return existing;
+  }
+  await require('./payout-economic-adapter').validateNewGift({wallet:w,accountId,importo,livello,eventKey,dettagli},client);
   const row = await queryOne(
     `WITH ins AS (
        INSERT INTO doni_pendenti
@@ -161,6 +139,7 @@ async function createPendingGift({
     ]
   );
 
+  if (row && (row.wallet !== w || Number(row.importo) !== amount || Number(row.livello) !== Number(livello))) throw new Error('PAYOUT_EXISTING_EVENT_CONFLICT');
   if (row && accountId != null && Number(row.account_id) !== Number(accountId)) {
     throw new Error(`Payout ${eventKey} gia associato a un account differente`);
   }
@@ -287,6 +266,7 @@ async function acceptPendingGift({ id, wallet }) {
   let dono;
   try {
     await client.query('BEGIN');
+    await require('./economic-ledger').configuredLedger(client).ready();
     const row = await client.query(
       `SELECT * FROM doni_pendenti WHERE id = $1 FOR UPDATE`,
       [id]
@@ -326,7 +306,7 @@ async function acceptPendingGift({ id, wallet }) {
 
   let result;
   try {
-    result = await sendUsdc({ toWallet: dono.wallet, importo: dono.importo });
+    result = await sendUsdc({ dono });
   } catch (err) {
     await finalizeAttempt(dono.id, 'FAILED', { errore: err.message });
     throw err;
@@ -334,6 +314,7 @@ async function acceptPendingGift({ id, wallet }) {
   // Se la finalizzazione DB fallisce dopo l'invio on-chain, il record resta
   // PROCESSING: non viene marcato FAILED e quindi non può essere ritentato
   // automaticamente causando un secondo trasferimento.
+  if (result.pending) return {...dono,status:'PROCESSING',tx_hash:result.txHash,pending:true,simulated:false};
   const updated = await finalizeAttempt(dono.id, 'SENT', {
     txHash: result.txHash,
     simulated: result.simulated
@@ -347,6 +328,7 @@ async function retryPendingGift({ id }) {
   let dono;
   try {
     await client.query('BEGIN');
+    await require('./economic-ledger').configuredLedger(client).ready();
     const row = await client.query(
       `SELECT * FROM doni_pendenti WHERE id = $1 FOR UPDATE`,
       [id]
@@ -384,11 +366,12 @@ async function retryPendingGift({ id }) {
 
   let result;
   try {
-    result = await sendUsdc({ toWallet: dono.wallet, importo: dono.importo });
+    result = await sendUsdc({ dono });
   } catch (err) {
     await finalizeAttempt(dono.id, 'FAILED', { errore: err.message });
     throw err;
   }
+  if (result.pending) return {...dono,status:'PROCESSING',tx_hash:result.txHash,pending:true,simulated:false};
   const updated = await finalizeAttempt(dono.id, 'SENT', {
     txHash: result.txHash,
     simulated: result.simulated
@@ -423,46 +406,8 @@ async function processPendingRegistry(limit = 10, dependencies = {}) {
   return { success: true, processed: results.length, results };
 }
 
-async function expirePendingGifts({ limit = 200 }) {
-  const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 200));
-  const treasuryWallet = process.env.PHARAOH_TREASURY_WALLET || null;
-  const destinazione = { destinazione: 'CASSA_PHARAOH', wallet: treasuryWallet };
-  const client = await pg.getClient();
-  try {
-    await client.query('BEGIN');
-    const rows = (await client.query(
-      `WITH candidati AS (
-         SELECT id
-         FROM doni_pendenti
-         WHERE status IN ('PENDING', 'FAILED')
-           AND expires_at <= NOW()
-         ORDER BY expires_at ASC, id ASC
-         FOR UPDATE SKIP LOCKED
-         LIMIT $1
-       )
-       UPDATE doni_pendenti d
-       SET status = 'EXPIRED',
-           expired_at = NOW(),
-           dettagli = d.dettagli || $2::jsonb
-       FROM candidati c
-       WHERE d.id = c.id
-       RETURNING d.id`,
-      [safeLimit, JSON.stringify(destinazione)]
-    )).rows || [];
-
-    for (const row of rows) {
-      await addAudit(row.id, 'EXPIRED', destinazione, client);
-    }
-    await client.query('COMMIT');
-    return { expired: rows.length, destinazione };
-  } catch (err) {
-    try {
-      await client.query('ROLLBACK');
-    } catch (_) {}
-    throw err;
-  } finally {
-    client.release();
-  }
+async function expirePendingGifts(options) {
+  return require('./payout-economic-adapter').expireUnsent(options);
 }
 
 async function getPendingGiftsByWallet(wallet) {

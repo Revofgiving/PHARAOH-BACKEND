@@ -8,7 +8,7 @@ const ROOT = path.resolve(__dirname, '..');
 const migrations = require('../ops/db-migrate');
 const plan = JSON.parse(fs.readFileSync(path.join(ROOT, 'database/migration-plan.json'), 'utf8'));
 
-assert.equal(plan.migrations.length, 24);
+assert.equal(plan.migrations.length, 28);
 for (const m of plan.migrations) {
   const data = fs.readFileSync(path.join(ROOT, m.file));
   const got = crypto.createHash('sha256').update(data).digest('hex');
@@ -37,6 +37,7 @@ const m21 = plan.migrations.find(x => x.id === '0021_numero_posizionale_unico');
 const m22 = plan.migrations.find(x => x.id === '0022_cassa_posizione_completa');
 const m23 = plan.migrations.find(x => x.id === '0023_direct_rog_wallet_eligibility_60m');
 const m24 = plan.migrations.find(x => x.id === '0024_gift_smartbox_activation');
+const m25 = plan.migrations.find(x => x.id === '0025_entry_global_progressive_with_function_reservations');
 assert.ok(m2.acceptedAppliedSha256.includes('8228812230a6e84b51a492c5f850cb2b0b7015073501475de1812ab86bd4f003'));
 assert.ok(m3.acceptedAppliedSha256.includes('e14f0b7b69f98885375c3479f6841a4aef5796e7c7058650edd6d9560e48413a'));
 assert.ok(!m4.acceptedAppliedSha256, '0004 e nuova e non deve accettare checksum legacy');
@@ -60,7 +61,9 @@ assert.ok(m21 && !m21.acceptedAppliedSha256, '0021 deve essere una migration nuo
 assert.ok(m22 && !m22.acceptedAppliedSha256, '0022 deve essere una migration nuova e immutabile');
 assert.ok(m23 && !m23.acceptedAppliedSha256, '0023 deve essere una migration nuova e immutabile');
 assert.ok(m24 && !m24.acceptedAppliedSha256, '0024 deve essere una migration nuova e immutabile');
+assert.ok(m25 && !m25.acceptedAppliedSha256, '0025 deve essere una migration nuova e immutabile');
 
+for(const id of ['0026_economic_ledger_s0','0027_continuity_non_genealogical','0028_secondary_function_identity_scope']){const step=plan.migrations.find(m=>m.id===id);assert.ok(step && !step.acceptedAppliedSha256);}
 const runner = fs.readFileSync(path.join(ROOT, 'ops/db-migrate.js'), 'utf8');
 assert.ok(runner.includes('acceptedAppliedSha256'), 'Migration runner deve riconoscere checksum legacy autorizzati');
 assert.ok(runner.includes('const accepted = new Set([planned.checksum'), 'Migration runner deve costruire allowlist esplicita');
@@ -71,8 +74,8 @@ const legacyApplied = [
 ];
 const comparison = migrations.comparePlan(migrations.loadPlan(), legacyApplied);
 assert.deepEqual(comparison.drift, [], 'Checksum 0002/0003 gia applicati devono essere accettati esplicitamente');
-assert.deepEqual(comparison.pending.map(x => x.id), ['0004_cross_movements', '0005_rha_dual_300_200', '0006_thot_humanitarian_reentry', '0007_iside_reentry_receiver_gift', '0008_remove_doni_credito', '0009_remove_dono_al_volo_staff_legacy', '0010_secondary_identity_wallets', '0011_entry_function_reservation_guard', '0012_entry_rollover_100', '0013_pharaoh_treasury_registry_v3', '0014_rog_rha_registration_evidence', '0015_direct_rog_async_gate', '0016_gift_pending_rog_beneficiary', '0017_gift_dynamic_rog_amount', '0018_gift_rog_exact_2', '0019_direct_rog_position_recovery', '0020_direct_rog_position_mandatory', '0021_numero_posizionale_unico', '0022_cassa_posizione_completa', '0023_direct_rog_wallet_eligibility_60m', '0024_gift_smartbox_activation']);
+assert.deepEqual(comparison.pending.map(x => x.id), ['0004_cross_movements', '0005_rha_dual_300_200', '0006_thot_humanitarian_reentry', '0007_iside_reentry_receiver_gift', '0008_remove_doni_credito', '0009_remove_dono_al_volo_staff_legacy', '0010_secondary_identity_wallets', '0011_entry_function_reservation_guard', '0012_entry_rollover_100', '0013_pharaoh_treasury_registry_v3', '0014_rog_rha_registration_evidence', '0015_direct_rog_async_gate', '0016_gift_pending_rog_beneficiary', '0017_gift_dynamic_rog_amount', '0018_gift_rog_exact_2', '0019_direct_rog_position_recovery', '0020_direct_rog_position_mandatory', '0021_numero_posizionale_unico', '0022_cassa_posizione_completa', '0023_direct_rog_wallet_eligibility_60m', '0024_gift_smartbox_activation', '0025_entry_global_progressive_with_function_reservations', '0026_economic_ledger_s0', '0027_continuity_non_genealogical', '0028_secondary_function_identity_scope']);
 const bad = migrations.comparePlan(migrations.loadPlan(), [{ id: '0002_direct_donation_sessions', checksum: '0'.repeat(64) }]);
 assert.deepEqual(bad.drift, ['0002_direct_donation_sessions']);
 
-console.log('PASS MIGRATIONS: 24 checksum correnti validi + 0010 identita/rientri + 0011 guard Funzioni + 0012 rollover Entrata + 0013 Pharaoh Treasury Registry V3 + 0014 ROG RHA registration evidence + 0015 DIRECT ROG async gate + 0016 beneficiary pending ROG + 0017 gift ROG dynamic amount + 0018 gift ROG fixed 2 USDC + 0019 recovery storico compatibile + 0020 posizione ROG obbligatoria + 0021 numero_posizionale unico + 0022 Cassa posizione completa + 0023 DIRECT wallet eligibility 60m + 0024 Gift Smartbox 3 mesi + compatibilita 0002/0003/0019 legacy');
+console.log('PASS MIGRATIONS: 28 checksum correnti validi + 0010 identita/rientri + 0011 guard Funzioni + 0012 rollover Entrata + 0013 Pharaoh Treasury Registry V3 + 0014 ROG RHA registration evidence + 0015 DIRECT ROG async gate + 0016 beneficiary pending ROG + 0017 gift ROG dynamic amount + 0018 gift ROG fixed 2 USDC + 0019 recovery storico compatibile + 0020 posizione ROG obbligatoria + 0021 numero_posizionale unico + 0022 Cassa posizione completa + 0023 DIRECT wallet eligibility 60m + 0024 Gift Smartbox 3 mesi + 0025 progressivo ENTRATA globale con prenotazioni + compatibilita 0002/0003/0019 legacy');

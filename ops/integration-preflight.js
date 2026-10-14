@@ -4,8 +4,8 @@ const { ethers } = require('ethers');
 
 const WALLET_RE = /^0x[a-fA-F0-9]{40}$/;
 const NATIVE_POLYGON_USDC = '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359';
-const EXPECTED_CONTRACT_ID = ethers.id('PHARAOH_TREASURY_REGISTRY_V3').toLowerCase();
-const EXPECTED_CONTRACT_VERSION = '3.0.0';
+const EXPECTED_CONTRACT_ID = ethers.id('PHARAOH_TREASURY_REGISTRY_V4').toLowerCase();
+const EXPECTED_CONTRACT_VERSION = '4.0.0';
 
 const PHARAOH_REGISTRY_ABI = [
   'function CONTRACT_ID() view returns (bytes32)',
@@ -14,6 +14,7 @@ const PHARAOH_REGISTRY_ABI = [
   'function hasRole(bytes32 role,address account) view returns (bool)',
   'function parentDAO() view returns (address)',
   'function pharaohTreasury() view returns (address)',
+  'function projectsTreasury() view returns (address)',
   'function paused() view returns (bool)',
   'function emergencyMode() view returns (bool)',
   'function circuitBreakerTriggered() view returns (bool)'
@@ -63,18 +64,20 @@ async function main() {
         const registryAddress = String(process.env.PHARAOH_REGISTRY_ADDRESS || '');
         const rogAddress = String(process.env.ROG_CONTRACT_ADDRESS || '');
         const treasuryAddress = String(process.env.PHARAOH_TREASURY_WALLET || '');
+        const projectsAddress = String(process.env.PHARAOH_PROJECTS_WALLET || '');
         const privateKey = String(process.env.PHARAOH_REGISTRY_PRIVATE_KEY || '');
         if (!/^0x[a-fA-F0-9]{64}$/.test(privateKey)) {
           failures.push('PHARAOH_REGISTRY_PRIVATE_KEY_NON_VALIDA');
         } else if (validAddress(registryAddress)) {
           const signerAddress = new ethers.Wallet(privateKey).address;
           const registry = new ethers.Contract(registryAddress, PHARAOH_REGISTRY_ABI, provider);
-          const [contractId, contractVersion, role, parentDAO, pharaohTreasury, paused, emergency, circuit] = await Promise.all([
+          const [contractId, contractVersion, role, parentDAO, pharaohTreasury, projectsTreasury, paused, emergency, circuit] = await Promise.all([
             registry.CONTRACT_ID(),
             registry.CONTRACT_VERSION(),
             registry.BACKEND_ROLE(),
             registry.parentDAO(),
             registry.pharaohTreasury(),
+            registry.projectsTreasury(),
             registry.paused(),
             registry.emergencyMode(),
             registry.circuitBreakerTriggered()
@@ -85,6 +88,8 @@ async function main() {
           if (String(contractVersion) !== EXPECTED_CONTRACT_VERSION) failures.push('PHARAOH_REGISTRY_VERSION_MISMATCH');
           if (!validAddress(rogAddress) || String(parentDAO).toLowerCase() !== rogAddress.toLowerCase()) failures.push('PHARAOH_REGISTRY_PARENT_ROG_MISMATCH');
           if (!validAddress(treasuryAddress) || String(pharaohTreasury).toLowerCase() !== treasuryAddress.toLowerCase()) failures.push('PHARAOH_REGISTRY_TREASURY_MISMATCH');
+          if (!validAddress(projectsAddress) || String(projectsTreasury).toLowerCase() !== projectsAddress.toLowerCase()) failures.push('PHARAOH_REGISTRY_PROJECTS_TREASURY_MISMATCH');
+          if (validAddress(treasuryAddress) && validAddress(projectsAddress) && treasuryAddress.toLowerCase() === projectsAddress.toLowerCase()) failures.push('PHARAOH_AND_PROJECTS_TREASURY_COLLISION');
           if (!hasRole) failures.push('PHARAOH_REGISTRY_BACKEND_ROLE_MANCANTE');
           if (paused) failures.push('PHARAOH_REGISTRY_PAUSED');
           if (emergency) failures.push('PHARAOH_REGISTRY_EMERGENCY_MODE');
@@ -125,7 +130,7 @@ async function main() {
   warnings.forEach(w => console.log(`WARNING: ${w}`));
   if (failures.length) throw new Error([...new Set(failures)].join(','));
   console.log('PREFLIGHT_INTEGRAZIONI_READ_ONLY: OK');
-  console.log('PHARAOH_REGISTRY_V3_PARENT_ROG_TREASURY: OK');
+  console.log('PHARAOH_REGISTRY_V4_PARENT_ROG_PHARAOH_PROJECTS: OK');
   console.log('URANUS_REGISTRY_DEPENDENCY: NONE');
   console.log('NESSUN_FONDO_INVIATO: TRUE');
 }

@@ -9,10 +9,13 @@ const WALLET_RE = /^0x[a-f0-9]{40}$/;
 const HASH_RE = /^0x[a-f0-9]{64}$/;
 const REGISTRY_SIGNER_LOCK = 'PHARAOH:REGISTRY:SIGNER';
 const REGISTRY_POST_CONFIRM_DELAY_MS = 1100;
-const EXPECTED_CONTRACT_ID = '0x26ae20af02532d4554967dbcfd3f908a8109b10c192532c20ef9689d9bf2fde2';
-const EXPECTED_CONTRACT_VERSION = '3.0.0';
+const EXPECTED_CONTRACT_ID = '0xa48a6b04ac72048d3478e03390eb959026f091c7a25214a558f417535c1d262d';
+const EXPECTED_CONTRACT_VERSION = '4.0.0';
 const DIRECTION_IN = 1;
 const DIRECTION_OUT = 2;
+const TREASURY_EXTERNAL = 0;
+const TREASURY_PHARAOH = 1;
+const TREASURY_PROJECTS = 2;
 
 const REGISTRY_ABI = [
   'function CONTRACT_ID() view returns (bytes32)',
@@ -20,11 +23,15 @@ const REGISTRY_ABI = [
   'function BACKEND_ROLE() view returns (bytes32)',
   'function hasRole(bytes32 role,address account) view returns (bool)',
   'function usedBackendRefs(bytes32) view returns (bool)',
+  'function usedRogRefs(bytes32) view returns (bool)',
   'function parentDAO() view returns (address)',
   'function pharaohTreasury() view returns (address)',
+  'function projectsTreasury() view returns (address)',
   'function registerIncoming(address counterparty,uint256 amount,string txType,bytes32 externalTxHash,bytes32 backendRef) returns (uint256)',
   'function registerOutgoing(address counterparty,uint256 amount,string txType,bytes32 externalTxHash,bytes32 backendRef) returns (uint256)',
-  'event TreasuryTransactionRegistered(uint256 indexed txId,address indexed counterparty,uint8 direction,uint256 amount,string txType,bytes32 externalTxHash,bytes32 indexed backendRef)'
+  'function registerMovement(uint8 sourceTreasury,uint8 destinationTreasury,address sourceWallet,address destinationWallet,uint256 amount,string txType,bytes32 externalTxHash,bytes32 backendRef,bytes32 rogRef) returns (uint256)',
+  'event TreasuryTransactionRegistered(uint256 indexed txId,address indexed counterparty,uint8 direction,uint256 amount,string txType,bytes32 externalTxHash,bytes32 indexed backendRef)',
+  'event TreasuryMovementRegistered(uint256 indexed movementId,uint8 sourceTreasury,uint8 destinationTreasury,address sourceWallet,address destinationWallet,uint256 amount,string txType,bytes32 externalTxHash,bytes32 indexed backendRef,bytes32 indexed rogRef)'
 ];
 
 let provider = null;
@@ -88,6 +95,7 @@ function getConfig() {
     chainId: Number(process.env.POLYGON_CHAIN_ID || 137),
     minConfirmations: Math.max(1, Number(process.env.POLYGON_MIN_CONFIRMATIONS || 1)),
     treasuryWallet: normalizedAddress(process.env.PHARAOH_TREASURY_WALLET, 'PHARAOH_TREASURY_WALLET'),
+    projectsTreasury: normalizedAddress(process.env.PHARAOH_PROJECTS_WALLET, 'PHARAOH_PROJECTS_WALLET'),
     rogParent: normalizedAddress(process.env.ROG_CONTRACT_ADDRESS, 'ROG_CONTRACT_ADDRESS')
   };
 }
@@ -111,14 +119,20 @@ async function runtime(dependencies = {}) {
   if (contractVersion !== EXPECTED_CONTRACT_VERSION) {
     throw makeError(`Versione PharaohRegistry non supportata: ${contractVersion}`, 'PHARAOH_REGISTRY_VERSION_MISMATCH');
   }
-  const [parentDAO, treasury, role] = await Promise.all([
-    contract.parentDAO(), contract.pharaohTreasury(), contract.BACKEND_ROLE()
+  const [parentDAO, treasury, projectsTreasury, role] = await Promise.all([
+    contract.parentDAO(), contract.pharaohTreasury(), contract.projectsTreasury(), contract.BACKEND_ROLE()
   ]);
   if (String(parentDAO).toLowerCase() !== cfg.rogParent) {
     throw makeError('PharaohRegistry non e collegato al contratto ROG configurato', 'PHARAOH_REGISTRY_PARENT_ROG_MISMATCH');
   }
   if (String(treasury).toLowerCase() !== cfg.treasuryWallet) {
     throw makeError('PharaohRegistry non controlla la Cassa PHARAOH configurata', 'PHARAOH_REGISTRY_TREASURY_MISMATCH');
+  }
+  if (String(projectsTreasury).toLowerCase() !== cfg.projectsTreasury) {
+    throw makeError('PharaohRegistry non controlla la Cassa PROGETTI configurata', 'PHARAOH_REGISTRY_PROJECTS_TREASURY_MISMATCH');
+  }
+  if (cfg.projectsTreasury === cfg.treasuryWallet) {
+    throw makeError('Cassa PHARAOH e Cassa PROGETTI devono essere distinte', 'PHARAOH_REGISTRY_TREASURY_COLLISION');
   }
   if (!(await contract.hasRole(role, await signer.getAddress()))) {
     throw makeError('Il wallet backend non possiede BACKEND_ROLE sul PharaohRegistry', 'PHARAOH_REGISTRY_BACKEND_ROLE_MISSING');
@@ -203,6 +217,264 @@ function expectedTreasuryEvent({ direction, counterparty, amount, txType, extern
   );
 }
 
+
+function parseMovementEventFromReceipt(receipt, contractAddress, expected) {
+  const iface = new ethers.Interface(REGISTRY_ABI);
+  for (const log of receipt.logs || []) {
+    if (String(log.address || '').toLowerCase() !== String(contractAddress).toLowerCase()) continue;
+    try {
+      const parsed = iface.parseLog(log);
+      if (!parsed || parsed.name !== 'TreasuryMovementRegistered') continue;
+      if (typeof expected === 'function' && !expected(parsed.args)) continue;
+      return parsed.args;
+    } catch (_) {}
+  }
+  return null;
+}
+
+function expectedMovementEvent({
+  sourceTreasury,
+  destinationTreasury,
+  sourceWallet,
+  destinationWallet,
+  amount,
+  txType,
+  externalTxHash,
+  ref,
+  rogRef
+}) {
+  return (args) => (
+    Number(args.sourceTreasury) === Number(sourceTreasury) &&
+    Number(args.destinationTreasury) === Number(destinationTreasury) &&
+    String(args.sourceWallet).toLowerCase() === sourceWallet &&
+    String(args.destinationWallet).toLowerCase() === destinationWallet &&
+    BigInt(args.amount.toString()) === amount &&
+    String(args.txType) === txType &&
+    String(args.externalTxHash).toLowerCase() === externalTxHash &&
+    String(args.backendRef).toLowerCase() === ref &&
+    String(args.rogRef).toLowerCase() === rogRef
+  );
+}
+
+async function recoverMovementByIndexedBackendRef({ ref, fromBlock = 0, expected, dependencies = {} }) {
+  const { cfg, p } = await runtime(dependencies);
+  const iface = new ethers.Interface(REGISTRY_ABI);
+  const event = iface.getEvent('TreasuryMovementRegistered');
+  const logs = await p.getLogs({
+    address: cfg.contractAddress,
+    fromBlock: Math.max(0, Number(fromBlock || 0)),
+    toBlock: 'latest',
+    topics: [event.topicHash, null, ref]
+  });
+
+  for (let i = logs.length - 1; i >= 0; i--) {
+    let parsed;
+    try { parsed = iface.parseLog(logs[i]); } catch (_) { continue; }
+    if (!parsed || parsed.name !== 'TreasuryMovementRegistered') continue;
+    if (typeof expected === 'function' && !expected(parsed.args)) continue;
+
+    const receipt = await p.getTransactionReceipt(logs[i].transactionHash);
+    if (!receipt || Number(receipt.status) !== 1) continue;
+
+    return { receipt, args: parsed.args, recovered: true };
+  }
+
+  throw makeError(
+    'Movimento PharaohRegistry gia consumato ma non recuperabile',
+    'PHARAOH_REGISTRY_RECOVERY_FAILED',
+    true
+  );
+}
+
+async function receiptFromStoredMovementHash({ txHash, expected, dependencies = {} }) {
+  const { cfg, p } = await runtime(dependencies);
+  const canonical = normalizedHash(txHash, 'registryTxHash');
+  const receipt = await p.getTransactionReceipt(canonical);
+
+  if (!receipt) {
+    throw makeError(
+      'Registrazione movimento PharaohRegistry ancora in conferma',
+      'PHARAOH_REGISTRY_PENDING',
+      true
+    );
+  }
+
+  if (Number(receipt.status) !== 1) {
+    throw makeError('Registrazione movimento PharaohRegistry revertita', 'PHARAOH_REGISTRY_REVERTED');
+  }
+
+  const args = parseMovementEventFromReceipt(receipt, cfg.contractAddress, expected);
+  if (!args) {
+    throw makeError(
+      'Receipt movimento PharaohRegistry non coerente',
+      'PHARAOH_REGISTRY_EVENT_MISMATCH'
+    );
+  }
+
+  return { receipt, args, recovered: true };
+}
+
+async function submitMovementCall({
+  sourceTreasury,
+  destinationTreasury,
+  sourceWallet,
+  destinationWallet,
+  amount,
+  txType,
+  externalTxHash,
+  ref,
+  rogRef = ethers.ZeroHash,
+  existingTxHash,
+  fromBlock = 0,
+  onSubmitted
+}, dependencies = {}) {
+  const ctx = await runtime(dependencies);
+  const shared = {
+    ...dependencies,
+    config: ctx.cfg,
+    provider: ctx.p,
+    signer: ctx.signer,
+    contract: ctx.contract
+  };
+
+  const canonicalRogRef = normalizedHash(rogRef, 'rogRef');
+
+  const expected = expectedMovementEvent({
+    sourceTreasury,
+    destinationTreasury,
+    sourceWallet,
+    destinationWallet,
+    amount,
+    txType,
+    externalTxHash,
+    ref,
+    rogRef: canonicalRogRef
+  });
+
+  if (existingTxHash) {
+    return receiptFromStoredMovementHash({
+      txHash: existingTxHash,
+      expected,
+      dependencies: shared
+    });
+  }
+
+  if (await ctx.contract.usedBackendRefs(ref)) {
+    return recoverMovementByIndexedBackendRef({
+      ref,
+      fromBlock,
+      expected,
+      dependencies: shared
+    });
+  }
+
+  if (
+    canonicalRogRef !== ethers.ZeroHash.toLowerCase() &&
+    await ctx.contract.usedRogRefs(canonicalRogRef)
+  ) {
+    throw makeError(
+      'Il ciclo ROG risulta gia utilizzato da un altro movimento PharaohRegistry',
+      'PHARAOH_REGISTRY_ROG_REF_ALREADY_USED'
+    );
+  }
+
+  const tx = await ctx.contract.registerMovement(
+    sourceTreasury,
+    destinationTreasury,
+    sourceWallet,
+    destinationWallet,
+    amount,
+    txType,
+    externalTxHash,
+    ref,
+    canonicalRogRef
+  );
+
+  if (typeof onSubmitted === 'function') {
+    await onSubmitted(String(tx.hash).toLowerCase());
+  }
+
+  const receipt = await tx.wait(ctx.cfg.minConfirmations);
+
+  if (!receipt || Number(receipt.status) !== 1) {
+    throw makeError(
+      'Registrazione movimento PharaohRegistry non confermata',
+      'PHARAOH_REGISTRY_REVERTED'
+    );
+  }
+
+  const args = parseMovementEventFromReceipt(
+    receipt,
+    ctx.cfg.contractAddress,
+    expected
+  );
+
+  if (!args) {
+    throw makeError(
+      'Evento TreasuryMovementRegistered non coerente',
+      'PHARAOH_REGISTRY_EVENT_MISMATCH'
+    );
+  }
+
+  return { receipt, args, recovered: false };
+}
+
+function directRogRef(session) {
+  if (String(session?.rog_fulfillment_status || '').toUpperCase() !== 'COMPLETED') {
+    throw makeError(
+      'Fulfillment ROG non completato per il movimento DIRECT PHARAOH',
+      'PHARAOH_REGISTRY_ROG_PROOF_REQUIRED'
+    );
+  }
+
+  if (!session?.rog_confirmed_at) {
+    throw makeError(
+      'Conferma ROG mancante per il movimento DIRECT PHARAOH',
+      'PHARAOH_REGISTRY_ROG_PROOF_REQUIRED'
+    );
+  }
+
+  const wallet = normalizedAddress(session.wallet, 'wallet');
+  const usdcTxHash = normalizedHash(session.rog_usdc_tx_hash, 'rogUsdcTxHash');
+  const registerTxHash = normalizedHash(session.rog_register_tx_hash, 'rogRegisterTxHash');
+
+  const donationId = String(session.rog_donation_id || '').trim();
+  if (!/^\d+$/.test(donationId) || BigInt(donationId) <= 0n) {
+    throw makeError(
+      'rogDonationId non valido per il movimento DIRECT PHARAOH',
+      'PHARAOH_REGISTRY_ROG_PROOF_REQUIRED'
+    );
+  }
+
+  const humanPosition = Number(session.rog_human_position);
+  if (!Number.isSafeInteger(humanPosition) || humanPosition <= 0) {
+    throw makeError(
+      'Posizione HUMAN ROG non valida per il movimento DIRECT PHARAOH',
+      'PHARAOH_REGISTRY_ROG_PROOF_REQUIRED'
+    );
+  }
+
+  const canonical = [
+    'DIRECT_ROG_V4',
+    wallet,
+    usdcTxHash,
+    registerTxHash,
+    donationId,
+    String(humanPosition)
+  ].join(':');
+
+  return ethers.keccak256(ethers.toUtf8Bytes(canonical)).toLowerCase();
+}
+
+function treasuryKindForWallet(wallet, cfg) {
+  const w = normalizedAddress(wallet, 'movementWallet');
+
+  if (w === cfg.treasuryWallet) return TREASURY_PHARAOH;
+  if (w === cfg.projectsTreasury) return TREASURY_PROJECTS;
+
+  return TREASURY_EXTERNAL;
+}
+
 async function submitTreasuryCall({ direction, counterparty, amount, txType, externalTxHash, ref, existingTxHash, fromBlock = 0, onSubmitted }, dependencies = {}) {
   const ctx = await runtime(dependencies);
   const shared = { ...dependencies, config: ctx.cfg, provider: ctx.p, signer: ctx.signer, contract: ctx.contract };
@@ -244,14 +516,38 @@ async function finalizeTreasuryCall(params, dependencies = {}) {
   }, dependencies);
 }
 
+
+async function finalizeMovementCall(params, dependencies = {}) {
+  return withRegistrySignerLock(async () => {
+    const result = await submitMovementCall(params, dependencies);
+    await postConfirmCooldownGuard(result, dependencies);
+
+    const movementId = Number(result.args.movementId.toString());
+
+    return {
+      txHash: String(result.receipt.hash || result.receipt.transactionHash).toLowerCase(),
+      txId: movementId,
+      movementId,
+      blockNumber: Number(result.receipt.blockNumber),
+      recovered: result.recovered
+    };
+  }, dependencies);
+}
+
 async function registerDirectIncoming({ session, onSubmitted }, dependencies = {}) {
-  return finalizeTreasuryCall({
-    direction: DIRECTION_IN,
-    counterparty: normalizedAddress(session.wallet, 'wallet'),
+  const cfg = dependencies.config || dependencies.cfg || getConfig();
+  const payer = normalizedAddress(session.wallet, 'wallet');
+
+  return finalizeMovementCall({
+    sourceTreasury: TREASURY_EXTERNAL,
+    destinationTreasury: TREASURY_PHARAOH,
+    sourceWallet: payer,
+    destinationWallet: cfg.treasuryWallet,
     amount: usdcBaseUnits(session.pharaoh_amount_usdc, 'pharaohAmountUsdc'),
     txType: 'DIRECT_IN',
     externalTxHash: normalizedHash(session.pharaoh_tx_hash, 'pharaohTxHash'),
     ref: backendRef(session.session_ref, 'DIRECT_IN'),
+    rogRef: directRogRef(session),
     existingTxHash: session.registry_tx_hash || null,
     fromBlock: proofBlock(session.pharaoh_proof),
     onSubmitted
@@ -314,23 +610,92 @@ async function registerCrossIncoming({ event, onSubmitted }, dependencies = {}) 
   }, dependencies);
 }
 
+/** V4: registra solo movimenti subwallet gia realmente trasferiti e verificati. */
+async function registerSubwalletMovement({ plan, verification, requiredConfirmations, eventKey, existingRegistryTxHash, onSubmitted }, dependencies = {}) {
+  const policy = require('./treasury-subwallet-policy');
+  if (typeof eventKey !== 'string' || !eventKey.trim() || typeof onSubmitted !== 'function') throw new Error('SUBWALLET_DURABLE_CONTEXT_REQUIRED');
+
+  const cfg = dependencies.config || dependencies.cfg || getConfig();
+
+  const subConfig = dependencies.subwalletConfig || {
+    wallets: {
+      PHARAOH: cfg.treasuryWallet,
+      GEMELLI: process.env.PHARAOH_GEMELLI_WALLET,
+      PROGETTI: cfg.projectsTreasury
+    },
+    tokenContract: process.env.USDC_CONTRACT_ADDRESS,
+    chainId: cfg.chainId
+  };
+
+  const canonical = policy.prepareSubwalletMovement({
+    purpose: plan?.purpose,
+    amountAtomic: plan?.amountAtomic,
+    externalTxHash: plan?.externalTxHash,
+    destinationWallet: plan?.to,
+    ...subConfig
+  });
+
+  for (const key of ['from', 'to', 'counterparty', 'pharaohWallet', 'tokenContract', 'chainId', 'direction']) {
+    if (canonical[key] !== plan[key]) throw new Error('SUBWALLET_PLAN_CONFIGURATION_MISMATCH');
+  }
+
+  if (
+    String(cfg.treasuryWallet).toLowerCase() !== canonical.pharaohWallet ||
+    String(cfg.projectsTreasury).toLowerCase() !== String(subConfig.wallets.PROGETTI || '').toLowerCase() ||
+    String(cfg.chainId) !== canonical.chainId
+  ) {
+    throw new Error('SUBWALLET_REGISTRY_CONFIGURATION_MISMATCH');
+  }
+
+  policy.requireMatchingProof(canonical, verification, requiredConfirmations);
+  policy.requireMatchingProof(canonical, verification, cfg.minConfirmations);
+
+  const sourceWallet = normalizedAddress(canonical.from, 'sourceWallet');
+  const destinationWallet = normalizedAddress(canonical.to, 'destinationWallet');
+
+  return finalizeMovementCall({
+    sourceTreasury: treasuryKindForWallet(sourceWallet, cfg),
+    destinationTreasury: treasuryKindForWallet(destinationWallet, cfg),
+    sourceWallet,
+    destinationWallet,
+    amount: canonical.amountAtomic,
+    txType: canonical.purpose,
+    externalTxHash: canonical.externalTxHash,
+    ref: backendRef(canonical.proofReference, 'SUBWALLET_TRANSFER_V4'),
+    rogRef: ethers.ZeroHash.toLowerCase(),
+    existingTxHash: existingRegistryTxHash || null,
+    fromBlock: Number(verification.proof.blockNumber),
+    onSubmitted
+  }, dependencies);
+}
+
 module.exports = {
   REGISTRY_ABI,
   EXPECTED_CONTRACT_ID,
   EXPECTED_CONTRACT_VERSION,
   DIRECTION_IN,
   DIRECTION_OUT,
+  TREASURY_EXTERNAL,
+  TREASURY_PHARAOH,
+  TREASURY_PROJECTS,
   getConfig,
   backendRef,
   registerDirectIncoming,
+  registerSubwalletMovement,
   registerGiftIncoming,
   registerPayoutOutgoing,
   registerCrossOutgoing,
   registerCrossIncoming,
   _runtime: runtime,
   _parseEventFromReceipt: parseEventFromReceipt,
+  _parseMovementEventFromReceipt: parseMovementEventFromReceipt,
   _recoverByIndexedBackendRef: recoverByIndexedBackendRef,
+  _recoverMovementByIndexedBackendRef: recoverMovementByIndexedBackendRef,
   _withRegistrySignerLock: withRegistrySignerLock,
   _postConfirmCooldownGuard: postConfirmCooldownGuard,
-  _submitTreasuryCall: submitTreasuryCall
+  _submitTreasuryCall: submitTreasuryCall,
+  _submitMovementCall: submitMovementCall,
+  _finalizeMovementCall: finalizeMovementCall,
+  _directRogRef: directRogRef,
+  _treasuryKindForWallet: treasuryKindForWallet
 };

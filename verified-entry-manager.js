@@ -13,72 +13,9 @@ function normalizeWallet(value, label) { const wallet = String(value || '').trim
 function normalizeTx(value) { const hash = String(value || '').trim().toLowerCase(); if (!HASH_RE.test(hash)) throw makeError('txHash non valido', 'VERIFIED_ENTRY_TX_INVALID'); return hash; }
 function getSystemWallets() { const donationFlow = require('./donation-flow-manager'); return { treasury: donationFlow.CASSA_PHARAOH_WALLET }; }
 
-async function processCompletedEntryTable({ completed, txHash, client }) {
-  const donationFlow = require('./donation-flow-manager');
-  const { turno, tavola, eredeWallet, nomeErede, isFondo, doniRicevuti, eredeAccountId = null, eredeAccountSigla = null } = completed;
-  const eventKey = `${txHash}:USCITA_ENTRATA:TAVOLA:${tavola.id}`;
-  let transactionBegun = false;
-  try {
-    await client.query('BEGIN');
-    transactionBegun = true;
-    let op = await db.getPostCommitOperationByEventKey(eventKey, client);
-    if (op?.status === 'COMPLETED') {
-      await client.query('COMMIT');
-      return { tavola: tavola.numero, status: 'ALREADY_COMPLETED' };
-    }
-    const claimed = await db.markPostCommitOperationInProgress(eventKey, client);
-    if (!claimed) {
-      op = await db.getPostCommitOperationByEventKey(eventKey, client);
-      if (op?.status === 'COMPLETED') {
-        await client.query('COMMIT');
-        return { tavola: tavola.numero, status: 'ALREADY_COMPLETED' };
-      }
-      if (op?.status === 'IN_PROGRESS') throw makeError(`Operazione post-COMMIT gia in esecuzione: ${eventKey}`, 'ENTRY_POST_COMMIT_BUSY', true);
-      throw makeError(`Impossibile acquisire operazione post-COMMIT: ${eventKey}`, 'ENTRY_POST_COMMIT_CLAIM_FAILED', true);
-    }
-
-    const trattenuta = rules.IMPORTI.TRATTENUTA_FONDO_ENTRATA;
-    const netto = doniRicevuti - trattenuta;
-    await db.registraAvanzamento({
-      wallet: eredeWallet,
-      accountId: eredeAccountId,
-      accountSigla: eredeAccountSigla,
-      tipoAccount: isFondo ? 'FONDO' : 'SACERDOTE',
-      daLivello: 0,
-      aLivello: 1,
-      turno: turno.numero_turno,
-      doniRicevuti,
-      doniTrattenuti: trattenuta,
-      netto,
-      evento: 'USCITA_ENTRATA',
-      eventKey
-    }, client);
-
-    await donationFlow.posizionaSacerdoteInPharaoh(
-      eredeWallet,
-      nomeErede,
-      client,
-      eredeAccountId ? { accountId: eredeAccountId, accountSigla: eredeAccountSigla } : null
-    );
-    const next = await donationFlow.avviaNuovoTurnoEntrata(turno, client);
-    await db.markPostCommitOperationCompleted(eventKey, client);
-    await client.query('COMMIT');
-    transactionBegun = false;
-
-    return {
-      tavola: tavola.numero,
-      status: 'COMPLETED',
-      rollover: next?.rollover ? {
-        amountUsdc: 100,
-        targetTable: next.rollover.audit?.target_tavola_numero || null,
-        targetSlot: next.rollover.audit?.target_casella || next.rollover.placement?.casellaOccupata || null
-      } : null
-    };
-  } catch (error) {
-    if (transactionBegun) { try { await client.query('ROLLBACK'); } catch (_) {} }
-    await db.markPostCommitOperationFailed(eventKey, error?.message || String(error));
-    return { tavola: tavola.numero, status: 'POST_COMMIT_PENDING', error: error?.message || String(error) };
-  }
+async function processCompletedEntryTable() {
+  // Never execute legacy post-commit operations without reviewed funding.
+  throw makeError('Usare la coda post-commit economica V4', 'LEGACY_UNFUNDED_ENTRY_COMPLETION_DISABLED');
 }
 
 async function assignOneVerifiedEntry({ paymentWallet, beneficiaryWallet, txHash, amountUsdc, blockchainProof, sourcePlatform, sourceEventKey, beneficiaryName = null, atomicComplete = null }) {
@@ -93,16 +30,17 @@ async function assignOneVerifiedEntry({ paymentWallet, beneficiaryWallet, txHash
     await client.query('SELECT pg_advisory_lock(hashtext($1))', [lockKey]); lockAcquired = true;
     const existingTx = await client.query('SELECT id FROM donazioni WHERE LOWER(tx_hash) = $1 LIMIT 1', [canonicalTx]); if (existingTx?.rows?.length) throw makeError('Transazione gia registrata nel sistema', 'BLOCKCHAIN_TX_REPLAY');
     const existingEvent = await client.query('SELECT id FROM donazioni WHERE source_platform = $1 AND source_event_key = $2 LIMIT 1', [source, eventKey]); if (existingEvent?.rows?.length) throw makeError('Evento Carta Regalo gia consumato', 'GIFT_EVENT_REPLAY');
-    await client.query('BEGIN'); transactionBegun = true; await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['PHARAOH:ENTRATA:POSIZIONAMENTO']);
-    const nomeEffettivo = (beneficiaryName || '').trim() || `${beneficiary.substring(0, 8)}...`; let account = await db.getAccount(beneficiary, client); if (!account) account = await db.createAccount({ wallet: beneficiary, nome: nomeEffettivo, tipo: 'PRIMARIO' }, client);
-    const turno = await db.getTurnoCorrente('ENTRATA', 0, client); if (!turno) throw makeError('Nessun turno attivo al livello di entrata', 'ENTRY_TURN_NOT_FOUND'); const tavola = await tableManager.getTavolaPercorsoAttiva(0, turno.numero_turno, client); if (!tavola) throw makeError('Nessuna tavola aperta al livello di entrata', 'ENTRY_TABLE_NOT_FOUND');
-    const placement = await tableManager.posizionaDonatore({ tavolaId: tavola.id, tavolaNumero: tavola.numero, livello: 0, wallet: beneficiary, nome: nomeEffettivo, tipo: 'DONATORE', donoImporto: 100, turno: turno.numero_turno, sdoppiabile: true, accountId: account.id, accountSigla: account.sigla || null, client });
-    account = await db.setAccountNumeroPosizionale(account.id, placement.numeroPosizionaleGlobale, client, { setSiglaIfNull: account.tipo === 'PRIMARIO' });
-    if (account.sigla) await db.syncEntryPlacementIdentity({ posizioneId: placement.posizione.id, tavolaSdoppiamentoId: placement.tavolaSdoppiamento?.id || null, accountId: account.id, accountSigla: account.sigla }, client);
-    await db.incrementSacerdotiEntrati(turno.id, client);
-    if (placement.tavolaCompleta) { const eredeWallet = tavola.faraone_wallet; const eredeAccount = tavola.faraone_account_id ? await db.getAccountByIdentity({ accountId: tavola.faraone_account_id, wallet: eredeWallet, sigla: tavola.faraone_sigla || null }, client) : await db.getAccount(eredeWallet, client); if (!eredeAccount) throw makeError(`Identita erede Entrata non risolta per tavola ${tavola.id}`, 'ENTRY_HEIR_IDENTITY_MISSING'); const nomeErede = eredeAccount.nome || eredeWallet.substring(0, 10); const isFondo = eredeAccount.tipo === 'FONDO'; const doniRicevuti = rules.IMPORTI.DONO_ENTRATA * 6; const postCommitEventKey = `${canonicalTx}:USCITA_ENTRATA:TAVOLA:${tavola.id}`; await db.createPostCommitOperation({ eventKey: postCommitEventKey, operationType: 'USCITA_ENTRATA_POST_COMMIT', txHash: canonicalTx, sourceTavolaId: tavola.id, sourceTavolaNumero: tavola.numero, turnoId: turno.id, turnoNumero: turno.numero_turno, wallet: eredeWallet, payload: { nomeErede, isFondo, doniRicevuti, turnoEntrataAvviatoNelBatch: false, eredeAccountId: eredeAccount.id, eredeAccountSigla: eredeAccount.sigla || null } }, client); completedTable = { turno, tavola, eredeWallet, nomeErede, isFondo, doniRicevuti, eredeAccountId: eredeAccount.id, eredeAccountSigla: eredeAccount.sigla || null }; }
+    await client.query('BEGIN'); transactionBegun = true; await require('./economic-ledger').configuredLedger(client).ready(); await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['PHARAOH:ENTRATA:POSIZIONAMENTO']);
+    const economicFlow = require('./economic-flow');
+    const materialized = await economicFlow.configuredFlow(client).admitExternal({eventKey,origin:'GIFT',payer,
+      beneficiaryWallet:beneficiary,name:(beneficiaryName || '').trim() || null,count:1,txHash:canonicalTx,proof:blockchainProof});
+    const entry = materialized.positions[0];
+    const tavola = {id:entry.tableId,numero:entry.tableNumber};
+    const turno = {id:entry.turnId,numero_turno:entry.turnNumber};
     await db.createDonazione({ donorWallet: payer, importo: 100, txHash: canonicalTx, tipo: 'DONO', destinatarioWallet: treasury, beneficiaryWallet: beneficiary, sourcePlatform: source, sourceEventKey: eventKey, positionsCreated: 1, tavolaId: tavola.id, livello: 0, turno: turno.numero_turno, blockchainProof }, client);
-    const coreResult = { success: true, sourcePlatform: source, sourceEventKey: eventKey, paymentWallet: payer, beneficiaryWallet: beneficiary, numeroPosizioni: 1, importoTotale: 100, pharaohTxHash: canonicalTx, posizioni: [{ tavola: { numero: tavola.numero, casella: placement.casellaOccupata, completa: placement.tavolaCompleta }, tavolaPersonale: placement.tavolaSdoppiamento ? { numero: placement.tavolaSdoppiamento.numero } : null }] };
+    const coreResult = {success:true,sourcePlatform:source,sourceEventKey:eventKey,paymentWallet:payer,
+      beneficiaryWallet:beneficiary,numeroPosizioni:1,importoTotale:100,pharaohTxHash:canonicalTx,
+      posizioni:materialized.positions.map(economicFlow.publicPosition)};
     if (typeof atomicComplete === 'function') await atomicComplete(client, coreResult); await client.query('COMMIT'); transactionBegun = false;
     const trasferimentiSistema = []; if (completedTable) trasferimentiSistema.push(await processCompletedEntryTable({ completed: completedTable, txHash: canonicalTx, client })); return { ...coreResult, trasferimentiSistema };
   } catch (error) { flowError = error; if (transactionBegun) { try { await client.query('ROLLBACK'); } catch (_) {} } throw error; }

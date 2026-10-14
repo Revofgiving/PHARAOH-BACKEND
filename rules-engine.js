@@ -324,7 +324,9 @@ function calcolaUscitaLivello(livello, tipoAccount, doniRicevuti) {
         dettaglioFunzioni: {
           simbionti: rilasci.rilasciaSimbionti ? { numero: 3, importo: IMPORTI.COSTO_SIMBIONTI } : null,
           perpetuo: rilasci.rilasciaPerpetuo ? { importo: IMPORTI.COSTO_PERPETUO } : null,
-          gemello: rilasci.rilasciaGemello ? { importo: IMPORTI.COSTO_GEMELLO } : null,
+          gemello: rilasci.rilasciaGemello ? { importo: IMPORTI.COSTO_GEMELLO, copertura: 'CASSA_GEMELLI_PREFINANZIATA' } : null,
+          continuitaRha: classificazione.tipo === 'PERPETUO' ? { importo: 500, genealogica: false, creaAccount: false, copertura: 'CASSA_GEMELLI_PREFINANZIATA' } : null,
+          riservaGemelloSuccessivo: { importo: 500, destinazione: 'CASSA_GEMELLI', inclusaNellaTrattenutaRha: true },
           allocazioneRha: {
             rogUsdc: IMPORTI.RHA_ROG_OUTBOUND,
             rogDualPositions: IMPORTI.RHA_ROG_DUAL_POSITIONS,
