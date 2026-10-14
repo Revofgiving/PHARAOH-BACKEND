@@ -75,7 +75,53 @@ const legacyApplied = [
 const comparison = migrations.comparePlan(migrations.loadPlan(), legacyApplied);
 assert.deepEqual(comparison.drift, [], 'Checksum 0002/0003 gia applicati devono essere accettati esplicitamente');
 assert.deepEqual(comparison.pending.map(x => x.id), ['0004_cross_movements', '0005_rha_dual_300_200', '0006_thot_humanitarian_reentry', '0007_iside_reentry_receiver_gift', '0008_remove_doni_credito', '0009_remove_dono_al_volo_staff_legacy', '0010_secondary_identity_wallets', '0011_entry_function_reservation_guard', '0012_entry_rollover_100', '0013_pharaoh_treasury_registry_v3', '0014_rog_rha_registration_evidence', '0015_direct_rog_async_gate', '0016_gift_pending_rog_beneficiary', '0017_gift_dynamic_rog_amount', '0018_gift_rog_exact_2', '0019_direct_rog_position_recovery', '0020_direct_rog_position_mandatory', '0021_numero_posizionale_unico', '0022_cassa_posizione_completa', '0023_direct_rog_wallet_eligibility_60m', '0024_gift_smartbox_activation', '0025_entry_global_progressive_with_function_reservations', '0026_economic_ledger_s0', '0027_continuity_non_genealogical', '0028_secondary_function_identity_scope']);
+// Authentic 14 Oct production checksum, independently present in the
+// 13 Oct backup. First 25 manifest records and all SQL bytes remain unchanged.
+const historical22 = migrations.HISTORICAL_0022;
+assert.equal(historical22.id, '0022_cassa_posizione_completa');
+assert.equal(historical22.currentSha256, m22.sha256);
+assert.ok(!m22.acceptedAppliedSha256, 'Historical manifest record 0022 must remain immutable');
+const current22 = migrations.loadPlan().find(m => m.id === historical22.id);
+assert.deepEqual(current22.acceptedAppliedSha256, [historical22.appliedSha256]);
+const productionApplied = plan.migrations.slice(0, 22).map(m => ({
+  id: m.id,
+  checksum: m.id === '0019_direct_rog_position_recovery'
+    ? '86a670e94f01a3ae2fbbd48156dc1ac36f73c520d48e22d79a46d49d62c12f1f'
+    : m.id === historical22.id ? historical22.appliedSha256 : m.sha256
+}));
+const prodComparison = migrations.comparePlan(migrations.loadPlan(), productionApplied);
+assert.deepEqual(prodComparison.unknown, []);
+assert.deepEqual(prodComparison.drift, []);
+assert.deepEqual(prodComparison.pending.map(m => m.id), plan.migrations.slice(22).map(m => m.id));
+const wrong22 = productionApplied.map(m => m.id === historical22.id
+  ? { ...m, checksum: '0'.repeat(64) } : m);
+assert.deepEqual(migrations.comparePlan(migrations.loadPlan(), wrong22).drift, [historical22.id]);
+
 const bad = migrations.comparePlan(migrations.loadPlan(), [{ id: '0002_direct_donation_sessions', checksum: '0'.repeat(64) }]);
 assert.deepEqual(bad.drift, ['0002_direct_donation_sessions']);
 
-console.log('PASS MIGRATIONS: 28 checksum correnti validi + 0010 identita/rientri + 0011 guard Funzioni + 0012 rollover Entrata + 0013 Pharaoh Treasury Registry V3 + 0014 ROG RHA registration evidence + 0015 DIRECT ROG async gate + 0016 beneficiary pending ROG + 0017 gift ROG dynamic amount + 0018 gift ROG fixed 2 USDC + 0019 recovery storico compatibile + 0020 posizione ROG obbligatoria + 0021 numero_posizionale unico + 0022 Cassa posizione completa + 0023 DIRECT wallet eligibility 60m + 0024 Gift Smartbox 3 mesi + 0025 progressivo ENTRATA globale con prenotazioni + compatibilita 0002/0003/0019 legacy');
+(async () => {
+  const okRow = { rollovers: '0', cassa_count: '3', cassa_invalide: '0', tavole_personali_invalide: '0' };
+  const historicalApplied = [{ id: historical22.id, checksum: historical22.appliedSha256 }];
+  let reads = 0;
+  const okClient = { query: async sql => {
+    assert.match(sql, /SELECT[\s\S]*FROM public\.posizioni/);
+    assert.doesNotMatch(sql, /\b(?:UPDATE|DELETE|TRUNCATE|INSERT)\s+public\./i);
+    reads++;
+    return { rows: [okRow] };
+  } };
+  assert.equal(await migrations.assertHistorical0022Schema(okClient, historicalApplied), true);
+  assert.equal(reads, 1);
+  assert.equal(await migrations.assertHistorical0022Schema(okClient, []), false);
+  assert.equal(reads, 1, 'unrelated databases must not receive extra queries');
+  await assert.rejects(
+    () => migrations.assertHistorical0022Schema({query: async()=>({rows:[{...okRow,cassa_invalide:'1'}]})},historicalApplied),
+    /0022_LEGACY_SCHEMA_INVARIANTS_FAILED/
+  );
+  await assert.rejects(
+    () => migrations.assertHistorical0022Schema({query: async()=>({rows:[]})},historicalApplied),
+    /0022_LEGACY_SCHEMA_READ_ONLY_UNAVAILABLE/
+  );
+  console.log('PRODUCTION_0022_HISTORY_COMPAT_PASS: exact applied SHA, 22 applied + 6 pending, schema fail-closed');
+  console.log('PASS MIGRATIONS: 28 checksum correnti validi + 0010 identita/rientri + 0011 guard Funzioni + 0012 rollover Entrata + 0013 Pharaoh Treasury Registry V3 + 0014 ROG RHA registration evidence + 0015 DIRECT ROG async gate + 0016 beneficiary pending ROG + 0017 gift ROG dynamic amount + 0018 gift ROG fixed 2 USDC + 0019 recovery storico compatibile + 0020 posizione ROG obbligatoria + 0021 numero_posizionale unico + 0022 Cassa posizione completa + 0023 DIRECT wallet eligibility 60m + 0024 Gift Smartbox 3 mesi + 0025 progressivo ENTRATA globale con prenotazioni + compatibilita 0002/0003/0019 legacy');
+})().catch(error => { console.error(error); process.exitCode = 1; });
