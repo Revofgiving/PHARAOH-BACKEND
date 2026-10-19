@@ -63,14 +63,66 @@ async function verifyRogRegistration({ registerTxHash, wallet, amountUsdc, donat
 }
 async function finalizeRogDonation({ wallet, amountUsdc, usdcTxHash, registerTxHash, donationId }) {
   const donor = normalizeWallet(wallet);
+  const paymentHash = normalizeHash(usdcTxHash, 'rogUsdcTxHash');
   const registrationHash = normalizeHash(registerTxHash, 'rogRegisterTxHash');
-  const registerPayload = await rogApi._rogRequest('/api/donation/register', { method: 'POST', timeoutMs: Number(process.env.ROG_API_TIMEOUT_MS || 30000), body: { donationId: String(donationId), donor, amount: Number(amountUsdc), txHash: normalizeHash(usdcTxHash, 'rogUsdcTxHash'), registerTxHash: registrationHash, donationType: 'standard' } });
-  let completion; try { completion = await rogApi._rogRequest('/api/donation/verify', { method: 'POST', timeoutMs: Number(process.env.ROG_COMPLETION_API_TIMEOUT_MS || 25000), body: { donationId: String(donationId) } }); } catch (error) { const payload = error?.payload || null; const pending = payload?.status === 'ONCHAIN_COMPLETION_PENDING' || payload?.retryable === true; if (pending || error?.message?.includes('ONCHAIN_COMPLETION_PENDING')) throw makeError('Completamento ROG ancora in conferma on-chain. Riprovare.', 'ROG_DONATION_COMPLETION_PENDING', true); throw error; }
-  if (completion?.success !== true || completion?.status !== 'COMPLETED') throw makeError('ROG non ha confermato la donazione come COMPLETED', 'ROG_DONATION_NOT_COMPLETED', true);
-  if (String(completion.rgxOwnerWallet || '').toLowerCase() !== donor) throw makeError('ROG ha attribuito la donazione a un wallet differente', 'ROG_DONATION_OWNER_MISMATCH');
-  if (!Number.isFinite(Number(completion.rgxMinted)) || Number(completion.rgxMinted) < 1) throw makeError('ROG non ha confermato almeno 1 RGX per la donazione', 'ROG_DONATION_RGX_NOT_VERIFIED');
-  const readback = await rogApi._rogRequest(`/api/donation/status/${encodeURIComponent(donor)}`, { timeoutMs: Number(process.env.ROG_API_TIMEOUT_MS || 30000) });
-  if (readback?.hasDonated !== true) throw makeError('Read-back ROG non conferma la donazione', 'ROG_DONATION_READBACK_FAILED', true);
-  return { success: true, register: registerPayload, completion, readback };
+  const canonicalDonationId = String(donationId || '').trim();
+  if (!/^\d+$/.test(canonicalDonationId) || BigInt(canonicalDonationId) <= 0n) {
+    throw makeError('rogDonationId non valido', 'ROG_DONATION_ID_INVALID');
+  }
+
+  // IMPORTANT: ROG e' l'unica autorita' che registra e classifica la propria
+  // donazione (standard/rientro). Il frontend ROG ha gia' eseguito
+  // /api/donation/register con il tipo corretto PRIMA del ritorno a PHARAOH.
+  // PHARAOH ha gia' verificato on-chain Transfer + DonationRegistered in
+  // _confirmRogPaymentLocked/_recordRogRegistrationLocked. Qui deve soltanto
+  // verificare il COMPLETED ROG, senza una seconda registrazione che potrebbe
+  // trasformare erroneamente un rientro in standard.
+  let completion;
+  try {
+    completion = await rogApi._rogRequest('/api/donation/verify', {
+      method: 'POST',
+      timeoutMs: Number(process.env.ROG_COMPLETION_API_TIMEOUT_MS || 25000),
+      body: { donationId: canonicalDonationId }
+    });
+  } catch (error) {
+    const payload = error?.payload || null;
+    const pending = payload?.status === 'ONCHAIN_COMPLETION_PENDING' || payload?.retryable === true;
+    if (pending || error?.message?.includes('ONCHAIN_COMPLETION_PENDING')) {
+      throw makeError('Completamento ROG ancora in conferma on-chain. Riprovare.', 'ROG_DONATION_COMPLETION_PENDING', true);
+    }
+    throw error;
+  }
+
+  if (completion?.success !== true || completion?.status !== 'COMPLETED') {
+    throw makeError('ROG non ha confermato la donazione come COMPLETED', 'ROG_DONATION_NOT_COMPLETED', true);
+  }
+  if (String(completion.rgxOwnerWallet || '').toLowerCase() !== donor) {
+    throw makeError('ROG ha attribuito la donazione a un wallet differente', 'ROG_DONATION_OWNER_MISMATCH');
+  }
+  if (!Number.isFinite(Number(completion.rgxMinted)) || Number(completion.rgxMinted) < 1) {
+    throw makeError('ROG non ha confermato almeno 1 RGX per la donazione', 'ROG_DONATION_RGX_NOT_VERIFIED');
+  }
+
+  const readback = await rogApi._rogRequest(`/api/donation/status/${encodeURIComponent(donor)}`, {
+    timeoutMs: Number(process.env.ROG_API_TIMEOUT_MS || 30000)
+  });
+  if (readback?.hasDonated !== true) {
+    throw makeError('Read-back ROG non conferma la donazione', 'ROG_DONATION_READBACK_FAILED', true);
+  }
+
+  return {
+    success: true,
+    register: {
+      skipped: true,
+      reason: 'ROG_ALREADY_REGISTERED_AND_ONCHAIN_VERIFIED',
+      donationId: canonicalDonationId,
+      donor,
+      amountUsdc: Number(amountUsdc),
+      usdcTxHash: paymentHash,
+      registerTxHash: registrationHash
+    },
+    completion,
+    readback
+  };
 }
 module.exports = { ROG_ABI, getConfig, verifyRogUsdcTransfer, verifyRogRegistration, finalizeRogDonation, _assertReceiptConfirmed: assertReceiptConfirmed };

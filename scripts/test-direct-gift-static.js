@@ -38,6 +38,14 @@ function main() {
   assert.ok(directMgr.includes('recordRogRegistrationCandidate'), 'DIRECT deve persistere la registerDonation candidate senza bloccare il gate');
   assert.ok(directMgr.includes('processRogFulfillmentPending'), 'DIRECT deve completare ROG in background');
   assert.ok(directMgr.includes('finalizeRogDonation'), 'Worker DIRECT deve verificare il completamento ROG');
+  const rogDonationManager = read('rog-donation-manager.js');
+  const finalizeStart = rogDonationManager.indexOf('async function finalizeRogDonation');
+  const finalizeEnd = rogDonationManager.indexOf('module.exports', finalizeStart);
+  const finalizeSegment = rogDonationManager.slice(finalizeStart, finalizeEnd);
+  assert.ok(finalizeSegment.includes("'/api/donation/verify'"), 'PHARAOH deve verificare il COMPLETED ROG');
+  assert.ok(!finalizeSegment.includes("'/api/donation/register'"), 'PHARAOH non deve registrare una seconda volta la donazione ROG');
+  assert.ok(!finalizeSegment.includes("donationType: 'standard'"), 'PHARAOH non deve forzare standard sui rientri ROG');
+  assert.ok(finalizeSegment.includes('ROG_ALREADY_REGISTERED_AND_ONCHAIN_VERIFIED'), 'Finalizzazione ROG deve esplicitare il no-reregister');
   assert.ok(api.includes("app.post('/api/donazione/diretta/rog/external/verify'"), 'Endpoint external/verify mancante');
   assert.ok(directMgr.includes('verifyExternalRogReturn'), 'Verifica server-side del ritorno ROG mancante');
   assert.ok(directMgr.includes("row.rog_fulfillment_status !== 'COMPLETED'"), 'Gate PHARAOH deve richiedere fulfillment ROG COMPLETED');
