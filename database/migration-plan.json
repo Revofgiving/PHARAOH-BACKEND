@@ -140,7 +140,10 @@
       "id": "0022_cassa_posizione_completa",
       "description": "Cassa PHARAOH come posizione ENTRATA completa: account autonomo, numero posizionale, sdoppiamento, progressione, Funzioni e doni; riconciliazione live delle Casse gia inserite",
       "file": "database/0022_cassa_posizione_completa.sql",
-      "sha256": "85bcabd00bd2fb904f8d7d895a0976ff602d7736a9ed9e3e5c9eac9d232f8358"
+      "sha256": "85bcabd00bd2fb904f8d7d895a0976ff602d7736a9ed9e3e5c9eac9d232f8358",
+      "acceptedAppliedSha256": [
+        "1e78baf17ebe367332ed99254605b045d13831c57727cd9bda44ef91da86327f"
+      ]
     },
     {
       "id": "0023_direct_rog_wallet_eligibility_60m",
@@ -177,6 +180,18 @@
       "description": "Scope progressivo identita funzionali: SIMBIONTE wallet-global, PERPETUO/GEMELLO per account origine condividendo il wallet reale",
       "file": "database/0028_secondary_function_identity_scope.sql",
       "sha256": "710b9528ca7a6ba64e8807e13aad5b521b69233bb72245b0407842f3f29ca6af"
+    },
+    {
+      "id": "0029_direct_pharaoh_server_reconciliation",
+      "description": "DIRECT PHARAOH: intento server, candidati append-only incluse sostituzioni wallet, annullamento auditato solo su rifiuto esplicito, claim limitato alla finestra ROG e recovery senza accredito non verificato",
+      "file": "database/0029_direct_pharaoh_server_reconciliation.sql",
+      "sha256": "0d6e03012ba99bbb6a4ff7b062930d4257a319bff9e714013b405ac8b26c0ce3"
+    },
+    {
+      "id": "0030_direct_session_before_community",
+      "description": "DIRECT V5: apre/recupera la sessione PHARAOH prima del controllo Community; SESSION_OPEN non autorizza fondi e viene promosso solo dopo verifica Community al gate ROG",
+      "file": "database/0030_direct_session_before_community.sql",
+      "sha256": "5a6864758175cf99d4e7e38705e978722bff9d1ecbca270292ea286572c3dd6a"
     }
   ]
 }

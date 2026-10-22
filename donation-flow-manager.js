@@ -646,9 +646,55 @@ async function processaDonoEntrataWallet({ wallet, txHash, sessionRef, nome }) {
     error.code = 'DIRECT_SESSION_REF_REQUIRED';
     throw error;
   }
-  return directDonation._withSessionLock(sessionRef, (client) =>
-    _processaDonoEntrataWalletLocked({ wallet, txHash, sessionRef, nome }, client)
-  );
+  try {
+    // Prima di qualunque attesa RPC il server conserva l'hash come candidato.
+    // Per client nuovi l'intento esiste gia; per client precedenti la compatibilita
+    // e consentita soltanto con claim e finestra ROG ancora validi.
+    await directDonation.attachPharaohCandidate({
+      wallet,
+      sessionRef,
+      txHash,
+      source: 'FINALIZE_COMPAT'
+    });
+    return await directDonation._withSessionLock(sessionRef, (client) =>
+      _processaDonoEntrataWalletLocked({ wallet, txHash, sessionRef, nome }, client)
+    );
+  } catch (error) {
+    await directSessions.recordPharaohReconciliationError(sessionRef, error).catch(() => null);
+    throw error;
+  }
+}
+
+async function riconciliaCandidatiPharaohDirect(limit = 10) {
+  const rows = await directSessions.listPharaohReconciliationPending(limit);
+  const results = [];
+  for (const row of rows) {
+    try {
+      const result = await processaDonoEntrataWallet({
+        wallet: row.wallet,
+        txHash: row.pharaoh_candidate_tx_hash,
+        sessionRef: row.session_ref,
+        nome: null
+      });
+      results.push({ sessionRef: row.session_ref, success: true, result });
+    } catch (error) {
+      results.push({
+        sessionRef: row.session_ref,
+        txHash: row.pharaoh_candidate_tx_hash,
+        success: false,
+        code: error.code || 'DIRECT_PHARAOH_RECONCILIATION_ERROR',
+        retryable: error.retryable === true,
+        error: String(error.message || error)
+      });
+    }
+  }
+  return {
+    success: true,
+    processed: results.length,
+    completed: results.filter((item) => item.success).length,
+    pending: results.filter((item) => !item.success).length,
+    results
+  };
 }
 
 async function processaDonoEntrata() {
@@ -2330,6 +2376,7 @@ module.exports = {
   gestisciUscitaFaraoneL5,
   buildUscitaIsideEventKey,
   recuperaOperazioniPostCommit,
+  riconciliaCandidatiPharaohDirect,
   // helper interni riusati dal bridge URANUS_TO_PHARAOH per la stessa cascata Entrata
   posizionaSacerdoteInPharaoh,
   avviaNuovoTurnoEntrata,

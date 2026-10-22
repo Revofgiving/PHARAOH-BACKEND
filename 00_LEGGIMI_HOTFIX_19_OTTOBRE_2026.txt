@@ -1,0 +1,28 @@
+PHARAOH BACKEND — HOTFIX DIRECT DONATION — 19 OTTOBRE 2026
+
+BASE: PHARAOH_BACKEND_13_OTTOBRE.zip
+SCOPE: solo flusso DIRECT PHARAOH <-> ROG.
+
+MODIFICHE:
+- PHARAOH non ripete piu POST /api/donation/register durante finalizeRogDonation().
+- Rimossa la forzatura donationType='standard'.
+- ROG resta unica autorita per classificazione standard/rientro.
+- PHARAOH verifica solo la donationId ROG gia registrata/completata e il read-back.
+
+NON MODIFICATI:
+- schema/migrazioni PostgreSQL
+- matematica e posizionamento PHARAOH
+- Smart Contract
+- ROG backend
+- Carta Regalo
+
+IMPORTANTE SHA256:
+I manifest storici presenti nel pacchetto appartengono alla release base.
+Per QUESTO hotfix usare HOTFIX_SHA256_MANIFEST_19_OTTOBRE_2026.txt.
+
+CERTIFICAZIONE HOTFIX:
+- test DIRECT mirati: PASS
+- suite completa locale: 48 PASS, 0 FAIL, 4 BLOCKED_DEPENDENCY per ethers/dotenv non installabili in ambiente offline
+- ISA DEVE eseguire npm ci && npm test in ambiente con accesso alle dipendenze PRIMA del deploy.
+
+DEPLOY LIVE ESEGUITO DA QUESTO PACCHETTO: NO

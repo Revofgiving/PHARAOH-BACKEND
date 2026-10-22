@@ -1,0 +1,28 @@
+HOTFIX QA — 19 OTTOBRE 2026
+
+PASS mirati:
+- scripts/test-direct-1to1-golden-e2e.js
+- scripts/test-direct-gift-dynamic.js
+- scripts/test-direct-gift-static.js
+- scripts/test-direct-rog-external-gate.js
+- unit dedicato finalizeRogDonation: chiamate solo /api/donation/verify + /api/donation/status/:wallet; /api/donation/register MAI chiamato
+
+Suite completa `npm test` nell'ambiente di preparazione:
+PASS=48
+FAIL=0
+BLOCKED_DEPENDENCY=4
+TIMEOUT=0
+TOTAL=52
+
+BLOCKED_DEPENDENCY:
+- test-blockchain-cross-dynamic.js
+- test-cross-forensic.js
+- test-pharaoh-registry-v4.js
+- test-subwallet-registry-wiring.js
+
+Motivo: ambiente offline; `npm ci` non ha potuto scaricare ethers/dotenv (EAI_AGAIN). Nessun FAIL applicativo nei 48 test eseguiti.
+
+GATE ISA PRE-DEPLOY OBBLIGATORIO:
+1. npm ci
+2. npm test
+3. richiedere FINAL_TESTS=PASS / 52 PASS / 0 FAIL / 0 BLOCKED_DEPENDENCY / 0 TIMEOUT

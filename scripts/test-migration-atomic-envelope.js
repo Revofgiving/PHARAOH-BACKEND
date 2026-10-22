@@ -31,7 +31,7 @@ const migrations=require('../ops/db-migrate');
    assert.equal(inTx,true,'Every DDL statement must remain within the caller transaction');policy.assertNoTransactionControl(sql);executed.push(sql);return{rows:[]};
   },release(){release++;}}),state:()=>({committed,staged,begins,commits,rollbacks,release,executed})};
  }
- const ok=recordingPool();const ids=await scope.module.exports.migrate(ok);assert.equal(ids.length,28);assert.equal(ok.state().committed.length,28);assert.equal(ok.state().begins,1);assert.equal(ok.state().commits,1);assert.equal(ok.state().rollbacks,0);assert.equal(ok.state().release,1);checks++;
+ const ok=recordingPool();const ids=await scope.module.exports.migrate(ok);assert.equal(ids.length,30);assert.equal(ok.state().committed.length,30);assert.equal(ok.state().begins,1);assert.equal(ok.state().commits,1);assert.equal(ok.state().rollbacks,0);assert.equal(ok.state().release,1);checks++;
  const bad=recordingPool('0026_economic_ledger_s0');await assert.rejects(scope.module.exports.migrate(bad),/INJECTED_MIGRATION_FAILURE/);assert.equal(bad.state().committed.length,0);assert.equal(bad.state().staged.length,0);assert.equal(bad.state().rollbacks,1);assert.equal(bad.state().commits,0);assert.equal(bad.state().release,1);checks++;
- console.log('MIGRATION_ATOMIC_ENVELOPE_PASS: '+checks+' checks; 27 raw files unchanged, 3 reviewed wrappers normalized at execution only; SQL recording double, NOT native PostgreSQL');
+ console.log('MIGRATION_ATOMIC_ENVELOPE_PASS: '+checks+' checks; 30 planned migrations, 3 reviewed wrappers normalized at execution only; SQL recording double, NOT native PostgreSQL');
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -9,6 +9,7 @@ const SESSION_RE = /^0x[a-f0-9]{64}$/;
 const DIRECT_ROG_PROTOCOL = 'ROG_DIRECT_CYCLE_1TO1_V2';
 const ROG_ELIGIBILITY_WINDOW_MS = 60 * 60 * 1000;
 const ROG_FRESHNESS_SKEW_MS = 5 * 1000;
+const MAX_PHARAOH_CANDIDATES_PER_SESSION = 8;
 
 function makeError(message, code) {
   const error = new Error(message);
@@ -38,6 +39,28 @@ function asJsonObject(value) {
   if (!value) return {};
   if (typeof value === 'object') return value;
   try { return JSON.parse(value); } catch (_) { return {}; }
+}
+
+function hasActivePharaohBroadcastIntent(row) {
+  return !!(row?.pharaoh_broadcast_intent_at && !row?.pharaoh_broadcast_cancelled_at);
+}
+
+function hasPharaohReconciliationEvidence(row) {
+  return !!(
+    row?.pharaoh_tx_hash ||
+    row?.pharaoh_candidate_tx_hash ||
+    hasActivePharaohBroadcastIntent(row)
+  );
+}
+
+function pharaohReconciliationState(row) {
+  if (!row) return 'NONE';
+  if (row.status === 'POSITION_ASSIGNED' || row.completed_at) return 'COMPLETED';
+  if (row.pharaoh_tx_hash) return 'VERIFIED';
+  if (row.pharaoh_candidate_tx_hash) return 'CANDIDATE_RECORDED';
+  if (hasActivePharaohBroadcastIntent(row)) return 'INTENT_RECORDED';
+  if (row.pharaoh_broadcast_intent_at && row.pharaoh_broadcast_cancelled_at) return 'INTENT_CANCELLED';
+  return 'NONE';
 }
 
 function proofBlockTimeMs(proof) {
@@ -87,7 +110,18 @@ function publicSession(row) {
     rogEligibilityCompletedAt: row.rog_eligibility_completed_at || null,
     rogEligibilityExpiresAt: row.rog_eligibility_expires_at || null,
     rogClaimedAt: row.rog_claimed_at || null,
-    rogClaimExpiresAt: row.rog_claim_expires_at || null
+    rogClaimExpiresAt: row.rog_claim_expires_at || null,
+    pharaohBroadcastIntentAt: row.pharaoh_broadcast_intent_at || null,
+    pharaohBroadcastClaimExpiresAt: row.pharaoh_broadcast_claim_expires_at || null,
+    pharaohBroadcastEligibilityExpiresAt: row.pharaoh_broadcast_eligibility_expires_at || null,
+    pharaohBroadcastCancelledAt: row.pharaoh_broadcast_cancelled_at || null,
+    pharaohBroadcastCancelReason: row.pharaoh_broadcast_cancel_reason || null,
+    pharaohCandidateTxHash: row.pharaoh_candidate_tx_hash || null,
+    pharaohCandidateRecordedAt: row.pharaoh_candidate_recorded_at || null,
+    pharaohCandidateSource: row.pharaoh_candidate_source || null,
+    pharaohReconciliationState: pharaohReconciliationState(row),
+    pharaohReconciliationLastError: row.pharaoh_reconciliation_last_error || null,
+    pharaohReconciliationUpdatedAt: row.pharaoh_reconciliation_updated_at || null
   };
 }
 
@@ -100,8 +134,8 @@ async function createSession(wallet, rogAmountUsdc = 2, client = null) {
   const ref = `0x${crypto.randomBytes(32).toString('hex')}`;
   const runner = client || pg;
   const result = await runner.query(
-    `INSERT INTO direct_donation_sessions (session_ref, wallet, rog_amount_usdc)
-     VALUES ($1, $2, $3)
+    `INSERT INTO direct_donation_sessions (session_ref, wallet, status, rog_amount_usdc)
+     VALUES ($1, $2, 'SESSION_OPEN', $3)
      RETURNING *`,
     [ref, w, amount]
   );
@@ -140,7 +174,12 @@ async function updateSession(sessionRef, fields, client = null) {
     'registry_tx_hash', 'registry_session_id', 'registry_block_number', 'registry_confirmed_at',
     'position_result', 'last_error', 'completed_at',
     'rog_eligibility_source', 'rog_eligibility_completed_at', 'rog_eligibility_expires_at',
-    'rog_claimed_at', 'rog_claim_expires_at'
+    'rog_claimed_at', 'rog_claim_expires_at',
+    'pharaoh_broadcast_intent_at', 'pharaoh_broadcast_claim_expires_at',
+    'pharaoh_broadcast_eligibility_expires_at', 'pharaoh_broadcast_cancelled_at',
+    'pharaoh_broadcast_cancel_reason', 'pharaoh_candidate_tx_hash',
+    'pharaoh_candidate_recorded_at', 'pharaoh_candidate_source',
+    'pharaoh_reconciliation_last_error', 'pharaoh_reconciliation_updated_at'
   ]);
   const entries = Object.entries(fields || {}).filter(([key]) => allowed.has(key));
   if (!entries.length) return getSession(ref, client);
@@ -319,7 +358,7 @@ async function recordRogFulfillmentCompleted({ sessionRef, wallet, rogResult }, 
 
   if (row.rog_eligibility_source === DIRECT_ROG_PROTOCOL) {
     const cycleStartedMs = new Date(row.created_at || 0).getTime();
-    const humanCreatedMs = new Date(humanRecord?.created_at || '').getTime();
+    const humanCreatedMs = new Date(humanRecord?.created_at || humanRecord?.timestamp || '').getTime();
     if (!Number.isFinite(cycleStartedMs) || !Number.isFinite(humanCreatedMs)) {
       throw makeError(
         'La nuova HUMAN ROG deve avere created_at verificabile per il ciclo DIRECT 1:1',
@@ -385,6 +424,63 @@ async function recordRogConfirmed({ sessionRef, wallet, amountUsdc, usdcTxHash, 
   return recordRogFulfillmentCompleted({ sessionRef, wallet, rogResult }, client);
 }
 
+async function getPharaohCandidate(sessionRef, txHash, client = null) {
+  const ref = normalizeSessionRef(sessionRef);
+  const canonicalHash = normalizeHash(txHash, 'pharaohCandidateTxHash');
+  const runner = client || pg;
+  const result = await runner.query(
+    `SELECT * FROM direct_pharaoh_tx_candidates
+      WHERE session_ref=$1 AND LOWER(tx_hash)=LOWER($2)
+      LIMIT 1`,
+    [ref, canonicalHash]
+  );
+  return result.rows[0] || null;
+}
+
+async function countPharaohCandidates(sessionRef, client = null) {
+  const ref = normalizeSessionRef(sessionRef);
+  const runner = client || pg;
+  const result = await runner.query(
+    'SELECT COUNT(*)::int AS count FROM direct_pharaoh_tx_candidates WHERE session_ref=$1',
+    [ref]
+  );
+  return Number(result.rows[0]?.count || 0);
+}
+
+async function insertPharaohCandidate({ sessionRef, txHash, source, replacesTxHash = null }, client = null) {
+  const ref = normalizeSessionRef(sessionRef);
+  const canonicalHash = normalizeHash(txHash, 'pharaohCandidateTxHash');
+  const canonicalReplaces = replacesTxHash ? normalizeHash(replacesTxHash, 'replacesTxHash') : null;
+  const runner = client || pg;
+  try {
+    const result = await runner.query(
+      `INSERT INTO direct_pharaoh_tx_candidates
+        (session_ref, tx_hash, source, replaces_tx_hash)
+       VALUES ($1,$2,$3,$4)
+       RETURNING *`,
+      [ref, canonicalHash, String(source || 'BROWSER').slice(0, 64), canonicalReplaces]
+    );
+    return result.rows[0];
+  } catch (error) {
+    if (String(error?.code || '') === '23505') {
+      throw makeError('Hash candidato PHARAOH gia associato a un altra sessione', 'DIRECT_SESSION_PROOF_CONFLICT');
+    }
+    throw error;
+  }
+}
+
+async function markPharaohCandidateVerified(sessionRef, txHash, client = null) {
+  const ref = normalizeSessionRef(sessionRef);
+  const canonicalHash = normalizeHash(txHash, 'pharaohCandidateTxHash');
+  const runner = client || pg;
+  await runner.query(
+    `UPDATE direct_pharaoh_tx_candidates
+        SET verified_at=COALESCE(verified_at,NOW()), last_error=NULL
+      WHERE session_ref=$1 AND LOWER(tx_hash)=LOWER($2)`,
+    [ref, canonicalHash]
+  );
+}
+
 async function recordPharaohVerified({ sessionRef, wallet, amountUsdc, txHash, proof }, client = null) {
   const row = await requireSession(sessionRef, wallet, client);
   if (!['ROG_PAYMENT_CONFIRMED', 'ROG_CONFIRMED', 'PHARAOH_VERIFIED', 'REGISTRY_SUBMITTED', 'REGISTRY_CONFIRMED'].includes(row.status)) {
@@ -405,14 +501,152 @@ async function recordPharaohVerified({ sessionRef, wallet, amountUsdc, txHash, p
     }
   }
 
+  const canonicalHash = normalizeHash(txHash, 'pharaohTxHash');
+  if (row.pharaoh_tx_hash && String(row.pharaoh_tx_hash).toLowerCase() !== canonicalHash) {
+    throw makeError('La sessione DIRECT e gia associata a una tx PHARAOH differente', 'DIRECT_SESSION_PROOF_CONFLICT');
+  }
+  let candidate = await getPharaohCandidate(sessionRef, canonicalHash, client);
+  if (!candidate) {
+    if (row.pharaoh_candidate_tx_hash && String(row.pharaoh_candidate_tx_hash).toLowerCase() !== canonicalHash) {
+      throw makeError('La transazione verificata non appartiene allo storico candidati della sessione', 'DIRECT_SESSION_PROOF_CONFLICT');
+    }
+    candidate = await insertPharaohCandidate({
+      sessionRef, txHash: canonicalHash, source: row.pharaoh_candidate_source || 'FINALIZE_COMPAT'
+    }, client);
+  }
+  await markPharaohCandidateVerified(sessionRef, canonicalHash, client);
+
+  const verifiedAt = row.pharaoh_verified_at || new Date().toISOString();
   return updateSession(sessionRef, {
     status: ['ROG_PAYMENT_CONFIRMED', 'ROG_CONFIRMED'].includes(row.status) ? 'PHARAOH_VERIFIED' : row.status,
     pharaoh_amount_usdc: Number(amountUsdc),
-    pharaoh_tx_hash: normalizeHash(txHash, 'pharaohTxHash'),
+    pharaoh_tx_hash: canonicalHash,
     pharaoh_proof: proof || null,
-    pharaoh_verified_at: row.pharaoh_verified_at || new Date().toISOString(),
+    pharaoh_verified_at: verifiedAt,
+    pharaoh_broadcast_intent_at: row.pharaoh_broadcast_intent_at || verifiedAt,
+    pharaoh_broadcast_claim_expires_at: row.pharaoh_broadcast_claim_expires_at || row.rog_claim_expires_at || null,
+    pharaoh_broadcast_eligibility_expires_at: row.pharaoh_broadcast_eligibility_expires_at || row.rog_eligibility_expires_at || null,
+    pharaoh_candidate_tx_hash: canonicalHash,
+    pharaoh_candidate_recorded_at: candidate.recorded_at || row.pharaoh_candidate_recorded_at || verifiedAt,
+    pharaoh_candidate_source: candidate.source || row.pharaoh_candidate_source || 'FINALIZE_COMPAT',
+    pharaoh_broadcast_cancelled_at: null,
+    pharaoh_broadcast_cancel_reason: null,
+    pharaoh_reconciliation_last_error: null,
+    pharaoh_reconciliation_updated_at: verifiedAt,
     last_error: null
   }, client);
+}
+
+async function recordPharaohBroadcastIntent({ sessionRef, wallet, claimExpiresAt, eligibilityExpiresAt }, client = null) {
+  const row = await requireSession(sessionRef, wallet, client);
+  if (row.status === 'POSITION_ASSIGNED' || row.completed_at) return row;
+  const now = new Date().toISOString();
+  const restartAfterCancellation = !!row.pharaoh_broadcast_cancelled_at;
+  return updateSession(sessionRef, {
+    pharaoh_broadcast_intent_at: restartAfterCancellation ? now : (row.pharaoh_broadcast_intent_at || now),
+    pharaoh_broadcast_claim_expires_at: restartAfterCancellation
+      ? (claimExpiresAt || row.rog_claim_expires_at || null)
+      : (row.pharaoh_broadcast_claim_expires_at || claimExpiresAt || row.rog_claim_expires_at || null),
+    pharaoh_broadcast_eligibility_expires_at: restartAfterCancellation
+      ? (eligibilityExpiresAt || row.rog_eligibility_expires_at || null)
+      : (row.pharaoh_broadcast_eligibility_expires_at || eligibilityExpiresAt || row.rog_eligibility_expires_at || null),
+    pharaoh_broadcast_cancelled_at: null,
+    pharaoh_broadcast_cancel_reason: null,
+    pharaoh_reconciliation_last_error: null,
+    pharaoh_reconciliation_updated_at: now,
+    last_error: null
+  }, client);
+}
+
+async function cancelPharaohBroadcastIntent({ sessionRef, wallet, reason = 'EXPLICIT_USER_REJECTION' }, client = null) {
+  const row = await requireSession(sessionRef, wallet, client);
+  if (row.pharaoh_tx_hash || row.pharaoh_candidate_tx_hash) {
+    throw makeError('Una transazione PHARAOH e gia presente e deve essere riconciliata', 'PHARAOH_RECOVERY_REQUIRED');
+  }
+  if (!hasActivePharaohBroadcastIntent(row)) return row;
+  const now = new Date().toISOString();
+  return updateSession(sessionRef, {
+    pharaoh_broadcast_cancelled_at: now,
+    pharaoh_broadcast_cancel_reason: String(reason || 'EXPLICIT_USER_REJECTION').slice(0, 128),
+    pharaoh_reconciliation_last_error: null,
+    pharaoh_reconciliation_updated_at: now,
+    rog_claimed_at: null,
+    rog_claim_expires_at: null,
+    last_error: null
+  }, client);
+}
+
+async function recordPharaohCandidate({ sessionRef, wallet, txHash, source = 'BROWSER', replacesTxHash = null }, client = null) {
+  const row = await requireSession(sessionRef, wallet, client);
+  const canonicalHash = normalizeHash(txHash, 'pharaohCandidateTxHash');
+  if (!hasActivePharaohBroadcastIntent(row)) {
+    throw makeError('Intento di broadcast PHARAOH non registrato o annullato sul server', 'DIRECT_BROADCAST_INTENT_REQUIRED');
+  }
+  if (row.pharaoh_tx_hash && String(row.pharaoh_tx_hash).toLowerCase() !== canonicalHash) {
+    throw makeError('La sessione DIRECT e gia associata a una tx PHARAOH differente', 'DIRECT_SESSION_PROOF_CONFLICT');
+  }
+
+  const existing = await getPharaohCandidate(sessionRef, canonicalHash, client);
+  if (existing) return row;
+
+  const current = row.pharaoh_candidate_tx_hash ? String(row.pharaoh_candidate_tx_hash).toLowerCase() : null;
+  let canonicalReplaces = null;
+  if (current && current !== canonicalHash) {
+    if (!replacesTxHash) {
+      throw makeError('La sessione DIRECT contiene gia un hash candidato differente', 'DIRECT_SESSION_PROOF_CONFLICT');
+    }
+    canonicalReplaces = normalizeHash(replacesTxHash, 'replacesTxHash');
+    if (canonicalReplaces !== current || !String(source || '').toUpperCase().includes('REPLACEMENT')) {
+      throw makeError('La sessione DIRECT contiene gia un hash candidato differente', 'DIRECT_SESSION_PROOF_CONFLICT');
+    }
+    const count = await countPharaohCandidates(sessionRef, client);
+    if (count >= MAX_PHARAOH_CANDIDATES_PER_SESSION) {
+      throw makeError('Numero massimo di sostituzioni wallet raggiunto per la sessione', 'DIRECT_CANDIDATE_LIMIT_REACHED');
+    }
+  } else if (replacesTxHash) {
+    throw makeError('Hash sostituito non coerente con il candidato corrente', 'DIRECT_SESSION_PROOF_CONFLICT');
+  }
+
+  const candidate = await insertPharaohCandidate({
+    sessionRef,
+    txHash: canonicalHash,
+    source,
+    replacesTxHash: canonicalReplaces
+  }, client);
+  const now = new Date().toISOString();
+  return updateSession(sessionRef, {
+    pharaoh_candidate_tx_hash: canonicalHash,
+    pharaoh_candidate_recorded_at: candidate.recorded_at || now,
+    pharaoh_candidate_source: candidate.source || String(source || 'BROWSER').slice(0, 64),
+    pharaoh_reconciliation_last_error: null,
+    pharaoh_reconciliation_updated_at: now,
+    last_error: null
+  }, client);
+}
+
+async function recordPharaohReconciliationError(sessionRef, error, client = null) {
+  const message = String(error?.message || error || 'Errore riconciliazione PHARAOH').slice(0, 1000);
+  return updateSession(sessionRef, {
+    pharaoh_reconciliation_last_error: message,
+    pharaoh_reconciliation_updated_at: new Date().toISOString()
+  }, client).catch(() => null);
+}
+
+async function listPharaohReconciliationPending(limit = 10, client = null) {
+  const runner = client || pg;
+  const safeLimit = Math.min(100, Math.max(1, Number(limit) || 10));
+  const result = await runner.query(
+    `SELECT *
+       FROM direct_donation_sessions
+      WHERE pharaoh_candidate_tx_hash IS NOT NULL
+        AND pharaoh_tx_hash IS NULL
+        AND completed_at IS NULL
+        AND status <> 'CANCELLED'
+      ORDER BY COALESCE(pharaoh_candidate_recorded_at, updated_at, created_at) ASC
+      LIMIT $1`,
+    [safeLimit]
+  );
+  return result.rows || [];
 }
 
 async function recordRegistrySubmitted({ sessionRef, txHash }, client = null) {
@@ -452,10 +686,14 @@ module.exports = {
   DIRECT_ROG_PROTOCOL,
   ROG_ELIGIBILITY_WINDOW_MS,
   ROG_FRESHNESS_SKEW_MS,
+  MAX_PHARAOH_CANDIDATES_PER_SESSION,
   normalizeWallet,
   normalizeHash,
   normalizeSessionRef,
   asJsonObject,
+  hasActivePharaohBroadcastIntent,
+  hasPharaohReconciliationEvidence,
+  pharaohReconciliationState,
   proofBlockTimeMs,
   assertStrictCycleProofFreshness,
   publicSession,
@@ -473,7 +711,16 @@ module.exports = {
   extractHumanPosition,
   extractHumanPositionRecord,
   recordRogConfirmed,
+  getPharaohCandidate,
+  countPharaohCandidates,
+  insertPharaohCandidate,
+  markPharaohCandidateVerified,
+  recordPharaohBroadcastIntent,
+  cancelPharaohBroadcastIntent,
+  recordPharaohCandidate,
   recordPharaohVerified,
+  recordPharaohReconciliationError,
+  listPharaohReconciliationPending,
   recordRegistrySubmitted,
   recordRegistryConfirmed,
   markPositionAssigned,

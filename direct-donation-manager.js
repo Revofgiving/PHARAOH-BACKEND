@@ -61,11 +61,12 @@ async function withRogFulfillmentLock(sessionRef, operation, dependencies = {}) 
 }
 
 async function startSession(wallet, dependencies = {}) {
-  const communityManager = dependencies.community || community;
   const sessionManager = dependencies.sessions || sessions;
   const rog = dependencies.rogDonation || rogDonation;
   const w = sessionManager.normalizeWallet(wallet);
-  await communityManager.assertCommunityMember(w);
+  // La sessione PHARAOH nasce PRIMA del controllo Community.
+  // Nessun diritto economico deriva dalla sola apertura della sessione:
+  // Community, ROG e PHARAOH restano verificati fail-closed ai rispettivi gate.
   const cfg = rog.getConfig();
   if (Number(cfg.amountUsdc) !== 2) {
     throw makeError('DIRECT richiede esattamente 2 USDC ROG per ogni nuova posizione PHARAOH', 'DIRECT_SESSION_ROG_AMOUNT_INVALID');
@@ -87,7 +88,7 @@ async function startSession(wallet, dependencies = {}) {
       );
       let existing = existingResult.rows[0] || null;
 
-      if (existing && !existing.pharaoh_tx_hash && existing.rog_eligibility_expires_at) {
+      if (existing && !sessionManager.hasPharaohReconciliationEvidence(existing) && existing.rog_eligibility_expires_at) {
         const expiresMs = new Date(existing.rog_eligibility_expires_at).getTime();
         if (Number.isFinite(expiresMs) && Date.now() >= expiresMs) {
           await client.query(
@@ -106,7 +107,7 @@ async function startSession(wallet, dependencies = {}) {
         return {
           success: true,
           idempotent: true,
-          recovery: !!existing.pharaoh_tx_hash,
+          recovery: sessionManager.hasPharaohReconciliationEvidence(existing),
           session: sessionManager.publicSession(existing)
         };
       }
@@ -131,6 +132,16 @@ async function getSessionForWallet(sessionRef, wallet, dependencies = {}) {
   return { success: true, session: sessionManager.publicSession(row) };
 }
 
+async function markPharaohBroadcastIntent({ wallet, sessionRef }, dependencies = {}) {
+  const eligibilityManager = dependencies.eligibility || eligibility;
+  return eligibilityManager.markBroadcastIntent(wallet, sessionRef, dependencies);
+}
+
+async function attachPharaohCandidate({ wallet, sessionRef, txHash, source = 'BROWSER', replacesTxHash = null }, dependencies = {}) {
+  const eligibilityManager = dependencies.eligibility || eligibility;
+  return eligibilityManager.attachCandidate(wallet, sessionRef, txHash, source, replacesTxHash, dependencies);
+}
+
 async function _confirmRogPaymentLocked({ wallet, sessionRef, rogUsdcTxHash }, client, dependencies = {}) {
   const communityManager = dependencies.community || community;
   const sessionManager = dependencies.sessions || sessions;
@@ -146,7 +157,7 @@ async function _confirmRogPaymentLocked({ wallet, sessionRef, rogUsdcTxHash }, c
     return { success: true, idempotent: true, canProceedToPharaoh: row.rog_fulfillment_status === 'COMPLETED' && Number(row.rog_human_position) > 0, session: sessionManager.publicSession(row) };
   }
 
-  if (!['COMMUNITY_CONFIRMED', 'ROG_CONFIRMING', 'ROG_PAYMENT_CONFIRMED'].includes(row.status)) {
+  if (!['SESSION_OPEN', 'COMMUNITY_CONFIRMED', 'ROG_CONFIRMING', 'ROG_PAYMENT_CONFIRMED'].includes(row.status)) {
     // Sessioni gia avanzate sono idempotenti se contengono una prova pagamento.
     if (['ROG_CONFIRMED', 'PHARAOH_VERIFIED', 'REGISTRY_SUBMITTED', 'REGISTRY_CONFIRMED', 'POSITION_ASSIGNED'].includes(row.status) && row.rog_usdc_tx_hash) {
       return { success: true, idempotent: true, canProceedToPharaoh: row.rog_fulfillment_status === 'COMPLETED' && Number(row.rog_human_position) > 0, session: sessionManager.publicSession(row) };
@@ -154,10 +165,19 @@ async function _confirmRogPaymentLocked({ wallet, sessionRef, rogUsdcTxHash }, c
     throw makeError(`Stato sessione non valido per pagamento ROG: ${row.status}`, 'DIRECT_SESSION_STATE_INVALID');
   }
 
+  // Il requisito Community viene verificato QUI prima di accettare la prova economica ROG.
+  // Una SESSION_OPEN non puo quindi saltare la Community: viene promossa solo dopo verifica reale.
   await communityManager.assertCommunityMember(w);
-  const expectedAmount = Number(row.rog_amount_usdc);
+  let currentRow = row;
+  if (row.status === 'SESSION_OPEN') {
+    currentRow = await sessionManager.updateSession(row.session_ref, {
+      status: 'COMMUNITY_CONFIRMED',
+      last_error: null
+    }, client);
+  }
+  const expectedAmount = Number(currentRow.rog_amount_usdc);
   const canonicalUsdcHash = sessionManager.normalizeHash(rogUsdcTxHash, 'rogUsdcTxHash');
-  if (row.rog_usdc_tx_hash && String(row.rog_usdc_tx_hash).toLowerCase() !== canonicalUsdcHash) {
+  if (currentRow.rog_usdc_tx_hash && String(currentRow.rog_usdc_tx_hash).toLowerCase() !== canonicalUsdcHash) {
     throw makeError('La sessione ROG e gia associata a una tx USDC differente', 'DIRECT_SESSION_PROOF_CONFLICT');
   }
 
@@ -167,7 +187,7 @@ async function _confirmRogPaymentLocked({ wallet, sessionRef, rogUsdcTxHash }, c
     wallet: w,
     amountUsdc: expectedAmount
   });
-  assertFreshCycleProof(row, usdcProof, 'pagamento 2 USDC');
+  assertFreshCycleProof(currentRow, usdcProof, 'pagamento 2 USDC');
 
   const updated = await sessionManager.recordRogPaymentConfirmed({
     sessionRef,
@@ -306,9 +326,9 @@ async function confirmRogDonation({ wallet, sessionRef, rogUsdcTxHash, rogRegist
 
 /**
  * Ritorno esplicito da ROG -> PHARAOH.
- * Il browser porta solo il riferimento al pagamento. Il gate dei 100 USDC
- * si apre dopo la verifica on-chain del Transfer esatto di 2 USDC a ROG.
- * DonationRegistered, HUMAN/PILETTA, molecola e livello H proseguono in background.
+ * Il browser porta i riferimenti del nuovo ciclo ROG. Il gate dei 100 USDC
+ * resta chiuso finche il backend non verifica pagamento 2 USDC, registerDonation
+ * e nuova HUMAN ROG COMPLETED associata alla stessa sessione PHARAOH.
  */
 async function verifyExternalRogReturn({ wallet, sessionRef, rogUsdcTxHash, rogRegisterTxHash = null, rogDonationId = null, rogPositionHint = null }, dependencies = {}) {
   if (!rogRegisterTxHash || !rogDonationId) {
@@ -519,6 +539,8 @@ async function assertReadyForPharaoh({ wallet, sessionRef }, dependencies = {}) 
 module.exports = {
   startSession,
   getSessionForWallet,
+  markPharaohBroadcastIntent,
+  attachPharaohCandidate,
   confirmRogPayment,
   submitRogRegistration,
   confirmRogDonation,

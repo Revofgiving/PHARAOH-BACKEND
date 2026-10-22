@@ -159,10 +159,15 @@ async function postConfirmCooldownGuard(result, dependencies = {}) {
   await sleep(delayMs);
 }
 
-function parseEventFromReceipt(receipt, contractAddress, expected) {
+function parseEventFromReceipt(receipt, contractAddress, expected, indexedLog = null) {
   const iface = new ethers.Interface(REGISTRY_ABI);
   for (const log of receipt.logs || []) {
     if (String(log.address || '').toLowerCase() !== String(contractAddress).toLowerCase()) continue;
+    if (indexedLog && (
+      String(log.data || '').toLowerCase() !== String(indexedLog.data || '').toLowerCase() ||
+      JSON.stringify((log.topics || []).map(t => String(t).toLowerCase())) !==
+      JSON.stringify((indexedLog.topics || []).map(t => String(t).toLowerCase()))
+    )) continue;
     try {
       const parsed = iface.parseLog(log);
       if (!parsed || parsed.name !== 'TreasuryTransactionRegistered') continue;
@@ -171,6 +176,18 @@ function parseEventFromReceipt(receipt, contractAddress, expected) {
     } catch (_) {}
   }
   return null;
+}
+
+function isMatchingIndexedRegistryLog(indexedLog, receipt) {
+  const indexedBlockHash = String(indexedLog?.blockHash || '').toLowerCase();
+  const receiptBlockHash = String(receipt?.blockHash || '').toLowerCase();
+  const indexedTxHash = String(indexedLog?.transactionHash || '').toLowerCase();
+  const receiptTxHash = String(receipt?.hash || receipt?.transactionHash || '').toLowerCase();
+  return HASH_RE.test(indexedBlockHash) &&
+    HASH_RE.test(receiptBlockHash) &&
+    indexedBlockHash === receiptBlockHash &&
+    HASH_RE.test(indexedTxHash) &&
+    indexedTxHash === receiptTxHash;
 }
 
 async function recoverByIndexedBackendRef({ ref, fromBlock = 0, expected, dependencies = {} }) {
@@ -190,7 +207,23 @@ async function recoverByIndexedBackendRef({ ref, fromBlock = 0, expected, depend
     if (typeof expected === 'function' && !expected(parsed.args)) continue;
     const receipt = await p.getTransactionReceipt(logs[i].transactionHash);
     if (!receipt || Number(receipt.status) !== 1) continue;
-    return { receipt, args: parsed.args, recovered: true };
+    await assertRegistryRecoveryConfirmations(receipt, cfg, p);
+    if (!isMatchingIndexedRegistryLog(logs[i], receipt)) continue;
+
+    const confirmedArgs = parseEventFromReceipt(
+      receipt,
+      cfg.contractAddress,
+      expected,
+      logs[i]
+    );
+
+    if (!confirmedArgs) continue;
+
+    return {
+      receipt,
+      args: confirmedArgs,
+      recovered: true
+    };
   }
   throw makeError('Evento PharaohRegistry gia consumato ma non recuperabile', 'PHARAOH_REGISTRY_RECOVERY_FAILED', true);
 }
@@ -201,9 +234,53 @@ async function receiptFromStoredHash({ txHash, expected, dependencies = {} }) {
   const receipt = await p.getTransactionReceipt(canonical);
   if (!receipt) throw makeError('Registrazione PharaohRegistry ancora in conferma', 'PHARAOH_REGISTRY_PENDING', true);
   if (Number(receipt.status) !== 1) throw makeError('Registrazione PharaohRegistry revertita', 'PHARAOH_REGISTRY_REVERTED');
+
+    await assertRegistryRecoveryConfirmations(receipt, cfg, p);
   const args = parseEventFromReceipt(receipt, cfg.contractAddress, expected);
   if (!args) throw makeError('Receipt PharaohRegistry non coerente', 'PHARAOH_REGISTRY_EVENT_MISMATCH');
   return { receipt, args, recovered: true };
+}
+
+
+async function assertRegistryRecoveryConfirmations(receipt, cfg, provider) {
+  const required = Number(cfg.minConfirmations);
+
+  if (!Number.isSafeInteger(required) || required < 1) {
+    throw makeError(
+      'Configurazione conferme Registry non valida',
+      'PHARAOH_REGISTRY_CONFIG_UNAVAILABLE'
+    );
+  }
+
+  const block = Number(receipt?.blockNumber);
+
+  if (!Number.isSafeInteger(block) || block < 0) {
+    throw makeError(
+      'Blocco della ricevuta Registry non disponibile',
+      'PHARAOH_REGISTRY_PENDING',
+      true
+    );
+  }
+
+  const head = Number(await provider.getBlockNumber());
+
+  if (!Number.isSafeInteger(head) || head < block) {
+    throw makeError(
+      'Conferme Registry non ancora disponibili',
+      'PHARAOH_REGISTRY_PENDING',
+      true
+    );
+  }
+
+  const confirmations = head - block + 1;
+
+  if (confirmations < required) {
+    throw makeError(
+      'Conferme Registry insufficienti',
+      'PHARAOH_REGISTRY_PENDING',
+      true
+    );
+  }
 }
 
 function expectedTreasuryEvent({ direction, counterparty, amount, txType, externalTxHash, ref }) {
@@ -218,10 +295,15 @@ function expectedTreasuryEvent({ direction, counterparty, amount, txType, extern
 }
 
 
-function parseMovementEventFromReceipt(receipt, contractAddress, expected) {
+function parseMovementEventFromReceipt(receipt, contractAddress, expected, indexedLog = null) {
   const iface = new ethers.Interface(REGISTRY_ABI);
   for (const log of receipt.logs || []) {
     if (String(log.address || '').toLowerCase() !== String(contractAddress).toLowerCase()) continue;
+    if (indexedLog && (
+      String(log.data || '').toLowerCase() !== String(indexedLog.data || '').toLowerCase() ||
+      JSON.stringify((log.topics || []).map(t => String(t).toLowerCase())) !==
+      JSON.stringify((indexedLog.topics || []).map(t => String(t).toLowerCase()))
+    )) continue;
     try {
       const parsed = iface.parseLog(log);
       if (!parsed || parsed.name !== 'TreasuryMovementRegistered') continue;
@@ -275,8 +357,24 @@ async function recoverMovementByIndexedBackendRef({ ref, fromBlock = 0, expected
 
     const receipt = await p.getTransactionReceipt(logs[i].transactionHash);
     if (!receipt || Number(receipt.status) !== 1) continue;
+    await assertRegistryRecoveryConfirmations(receipt, cfg, p);
+    if (!isMatchingIndexedRegistryLog(logs[i], receipt)) continue;
 
-    return { receipt, args: parsed.args, recovered: true };
+
+    const confirmedArgs = parseMovementEventFromReceipt(
+      receipt,
+      cfg.contractAddress,
+      expected,
+      logs[i]
+    );
+
+    if (!confirmedArgs) continue;
+
+    return {
+      receipt,
+      args: confirmedArgs,
+      recovered: true
+    };
   }
 
   throw makeError(
@@ -302,6 +400,7 @@ async function receiptFromStoredMovementHash({ txHash, expected, dependencies = 
   if (Number(receipt.status) !== 1) {
     throw makeError('Registrazione movimento PharaohRegistry revertita', 'PHARAOH_REGISTRY_REVERTED');
   }
+  await assertRegistryRecoveryConfirmations(receipt, cfg, p);
 
   const args = parseMovementEventFromReceipt(receipt, cfg.contractAddress, expected);
   if (!args) {

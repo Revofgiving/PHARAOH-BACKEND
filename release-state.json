@@ -1,21 +1,21 @@
 {
-  "buildId": "PHARAOH_BACKEND_11_OTTOBRE_2026_REGISTRY_V4_PROJECTS_DEPLOYABLE_FINAL",
-  "releaseDate": "2026-10-13",
+  "buildId": "PHARAOH_BACKEND_V6_21_OTTOBRE_2026_RELEASE",
+  "releaseDate": "2026-10-21",
   "deployable": true,
   "migrationAllowed": true,
   "registryContractId": "PHARAOH_TREASURY_REGISTRY_V4",
   "registryAbiVersion": "4.0.0",
-  "migrationCount": 28,
+  "migrationCount": 30,
   "original25MigrationsUnchanged": true,
   "current28SqlMigrationsUnchanged": true,
-  "newSqlMigrationsThisRelease": 0,
+  "newSqlMigrationsThisRelease": 2,
   "testSummary": {
-    "PASS": 52,
+    "PASS": 53,
     "FAIL": 0,
     "BLOCKED_DEPENDENCY": 0,
     "TIMEOUT": 0
   },
-  "testTotal": 52,
+  "testTotal": 53,
   "npmTestExitCode": 0,
   "releaseGate": {
     "policyVersion": 1,
@@ -26,7 +26,7 @@
     "integrationPreflightRequired": true,
     "databaseMigrationRunsAfterPreflight": true
   },
-  "certificationScope": "Local source/unit/mock/forensic certification. Production activation additionally requires the packaged fail-closed production and integration preflights against ISA's real environment.",
+  "certificationScope": "V6 source/unit/mock/forensic certification plus staging database restore, migrations 0029/0030 and data-preservation rehearsal completed on 2026-10-21. Production activation still requires the packaged fail-closed production and integration preflights against the real environment.",
   "productionAccessed": false,
   "realTransfersSubmitted": 0,
   "dockerImageBuiltInCertificationEnvironment": false,
@@ -49,5 +49,6 @@
     "defaultSigningMode": "MANUAL",
     "maxOutgoingUsdc": 50000,
     "structuralCapitalUsdc": 100
-  }
+  },
+  "current30SqlMigrationsCertified": true
 }

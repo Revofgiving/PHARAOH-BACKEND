@@ -140,6 +140,7 @@ const isDonationMutation = (req) => {
 
   // DIRECT: autorizzazione/start, passaggi ROG e pagamento PHARAOH.
   if (path === '/api/donazione/diretta/authorize') return true;
+  if (path === '/api/donazione/diretta/broadcast/intent') return true;
   if (path === '/api/donazione/diretta/session') return true;
   if (path.startsWith('/api/donazione/diretta/rog/')) return true;
   if (path === '/api/donazione/entrata/wallet') return true;
@@ -763,9 +764,42 @@ app.post('/api/donazione/diretta/authorize/release', security.donationLimiter, a
   try {
     const wallet = security.validateWallet(req.body.wallet);
     const sessionRef = String(req.body.sessionRef || '').trim();
-    res.json(await directEligibility.release(wallet, sessionRef));
+    const reason = String(req.body.reason || '').trim();
+    res.json(await directEligibility.release(wallet, sessionRef, { reason }));
   } catch (e) {
     res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'DIRECT_AUTHORIZATION_RELEASE_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
+  }
+});
+
+// Persistito PRIMA di aprire il wallet: non accredita fondi, ma impedisce che
+// una sessione incerta venga cancellata o sostituita dopo la scadenza ROG.
+app.post('/api/donazione/diretta/broadcast/intent', security.donationLimiter, async (req, res) => {
+  try {
+    const wallet = security.validateWallet(req.body.wallet);
+    const sessionRef = String(req.body.sessionRef || '').trim();
+    res.json(await directDonation.markPharaohBroadcastIntent({ wallet, sessionRef }));
+  } catch (e) {
+    security.securityLog('DIRECT_PHARAOH_BROADCAST_INTENT_ERROR', e.message, req.ip);
+    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'DIRECT_PHARAOH_BROADCAST_INTENT_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
+  }
+});
+
+// Persistito appena il wallet restituisce l'hash. L'hash resta candidato:
+// nessun accredito avviene finche il verifier on-chain non lo conferma.
+app.post('/api/donazione/diretta/broadcast/candidate', security.donationLimiter, async (req, res) => {
+  try {
+    const wallet = security.validateWallet(req.body.wallet);
+    const sessionRef = String(req.body.sessionRef || '').trim();
+    const txHash = security.validateTxHash(req.body.txHash || req.body.pharaohTxHash);
+    const replacesTxHash = req.body.replacesTxHash ? security.validateTxHash(req.body.replacesTxHash) : null;
+    res.json(await directDonation.attachPharaohCandidate({
+      wallet, sessionRef, txHash,
+      source: replacesTxHash ? 'WALLET_REPLACEMENT' : 'BROWSER',
+      replacesTxHash
+    }));
+  } catch (e) {
+    security.securityLog('DIRECT_PHARAOH_CANDIDATE_ERROR', e.message, req.ip);
+    res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'DIRECT_PHARAOH_CANDIDATE_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
   }
 });
 
@@ -909,6 +943,25 @@ app.post('/api/donazione/entrata/wallet',
                    : security.httpStatusForError(e, 400);
       security.securityLog('DONATION_ERROR', e.message, req.ip);
       res.status(status).json({ success: false, code: e.code || 'DONATION_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
+    }
+  }
+);
+
+// Route di recovery: resta disponibile anche con il kill switch DONAZIONI
+// attivo, ma accetta solo una sessione con intento/hash candidato durevoli.
+app.post('/api/donazione/diretta/reconcile',
+  security.donationLimiter,
+  async (req, res) => {
+    try {
+      const wallet = security.validateWallet(req.body.wallet);
+      const txHash = security.validateTxHash(req.body.txHash || req.body.pharaohTxHash);
+      const nome = security.sanitizeNome(req.body.nome);
+      const sessionRef = String(req.body.sessionRef || '').trim();
+      const result = await donationFlow.processaDonoEntrataWallet({ wallet, txHash, sessionRef, nome });
+      res.json(result);
+    } catch (e) {
+      security.securityLog('DIRECT_PHARAOH_RECONCILIATION_ERROR', e.message, req.ip);
+      res.status(security.httpStatusForError(e, 400)).json({ success: false, code: e.code || 'DIRECT_PHARAOH_RECONCILIATION_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
     }
   }
 );
@@ -1077,6 +1130,17 @@ app.post('/api/admin/direct/rog/process', security.requireAdminKey, async (req, 
     res.json(await directDonation.processRogFulfillmentPending(limit));
   } catch (e) {
     res.status(security.httpStatusForError(e, 500)).json({ success: false, code: e.code || 'DIRECT_ROG_FULFILLMENT_ERROR', error: security.sanitizeError(e) });
+  }
+});
+
+// Recovery server-side dei candidati PHARAOH gia persistiti. Non ricerca
+// pagamenti per wallet e non crea accrediti senza hash/receipt verificati.
+app.post('/api/admin/direct/pharaoh/reconcile', security.requireAdminKey, async (req, res) => {
+  try {
+    const limit = req.body?.limit == null ? 10 : security.validateIntegerInRange(req.body.limit, 1, 100, 'limit');
+    res.json(await donationFlow.riconciliaCandidatiPharaohDirect(limit));
+  } catch (e) {
+    res.status(security.httpStatusForError(e, 500)).json({ success: false, code: e.code || 'DIRECT_PHARAOH_RECONCILIATION_ERROR', retryable: e.retryable === true, error: security.sanitizeError(e) });
   }
 });
 
@@ -1569,6 +1633,36 @@ function startRogFulfillmentWorker() {
   return timer;
 }
 
+function startDirectPharaohReconciliationWorker() {
+  if (process.env.DIRECT_PHARAOH_RECONCILIATION_WORKER_ENABLED !== '1') {
+    console.log('ℹ️  Worker riconciliazione PHARAOH DIRECT disabilitato (DIRECT_PHARAOH_RECONCILIATION_WORKER_ENABLED!=1)');
+    return null;
+  }
+  const intervalMs = Math.max(15000, Number(process.env.DIRECT_PHARAOH_RECONCILIATION_WORKER_INTERVAL_MS || 30000));
+  const batch = Math.min(50, Math.max(1, Number(process.env.DIRECT_PHARAOH_RECONCILIATION_WORKER_BATCH || 10)));
+  let running = false;
+  const run = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const block = await db.getStatoBlocco();
+      if (block?.bloccato) return;
+      const result = await donationFlow.riconciliaCandidatiPharaohDirect(batch);
+      const pending = result.results?.filter(x => x.success === false) || [];
+      if (pending.length) security.securityLog('DIRECT_PHARAOH_RECONCILIATION_WORKER_PENDING', pending.map(x => x.code || 'ERROR').join(','));
+    } catch (error) {
+      security.securityLog('DIRECT_PHARAOH_RECONCILIATION_WORKER_ERROR', error.message || String(error));
+    } finally {
+      running = false;
+    }
+  };
+  const timer = setInterval(run, intervalMs);
+  if (typeof timer.unref === 'function') timer.unref();
+  setImmediate(run);
+  console.log(`✅ Worker riconciliazione PHARAOH DIRECT attivo ogni ${intervalMs} ms, batch ${batch}`);
+  return timer;
+}
+
 function startPayoutRegistryWorker() {
   if (process.env.PHARAOH_REGISTRY_WORKER_ENABLED !== '1') {
     console.log('ℹ️  Worker recovery PharaohRegistry payout disabilitato (PHARAOH_REGISTRY_WORKER_ENABLED!=1)');
@@ -1624,6 +1718,7 @@ async function start() {
   require('./economic-worker').startEconomicWorker();
   startCrossOutboundWorker();
   startRogFulfillmentWorker();
+  startDirectPharaohReconciliationWorker();
   startPayoutRegistryWorker();
 
   giftFlow.startSmartboxExpiryReconciler();
@@ -1642,6 +1737,9 @@ app.listen(PORT, () => {
     console.log(`   POST /api/donazione/diretta/rog/register  → Registra prova registerDonation ROG (asincrono)`);
     console.log(`   POST /api/donazione/diretta/rog/confirm   → Compatibilita legacy payment+register`);
     console.log(`   POST /api/donazione/diretta/rog/external/verify → Verifica ritorno ROG payment-only; fulfillment asincrono`);
+    console.log(`   POST /api/donazione/diretta/broadcast/intent   → Registra intento prima del wallet`);
+    console.log(`   POST /api/donazione/diretta/broadcast/candidate → Registra hash candidato immutabile`);
+    console.log(`   POST /api/donazione/diretta/reconcile           → Verifica e completa la stessa sessione`);
     console.log(`   POST /api/donazione/entrata/wallet        → Conferma 100 USDC PHARAOH DIRECT`);
     console.log(`   POST /api/gift/create                      → Crea Carta Regalo`);
     console.log(`   POST /api/gift/:giftId/rog/external/verify → Verifica Carta Regalo ROG esterna`);

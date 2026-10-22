@@ -1,0 +1,19 @@
+{
+  "status": "NON_DEPLOY",
+  "registrySha256": "8ff7bfca0a5cf1feb65896a6cafcd7f0364c0879051f28f4191ec80e11f2cde7",
+  "recordedAt": "2026-10-22T11:42:29.614Z",
+  "executionEvidence": "Output Terminale Mac comunicato dall operatore",
+  "results": {
+    "hardening": "PASS",
+    "registryV4": "PASS",
+    "subwalletV4": "PASS",
+    "forensic": {
+      "total": 54,
+      "passed": 54,
+      "failed": 0,
+      "blocked": 0,
+      "timeout": 0
+    }
+  },
+  "note": "Risultati dichiarati sulla base dell output del Terminale. Non sostituisce il log integrale dei test."
+}

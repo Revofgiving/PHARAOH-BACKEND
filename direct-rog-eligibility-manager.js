@@ -28,6 +28,12 @@ function hasCompletedFreshRog(row) {
     !!row?.rog_confirmed_at;
 }
 
+function hasPharaohRecoveryEvidence(row, sessionManager = sessions) {
+  return sessionManager.hasPharaohReconciliationEvidence
+    ? sessionManager.hasPharaohReconciliationEvidence(row)
+    : !!(row?.pharaoh_tx_hash || row?.pharaoh_candidate_tx_hash || row?.pharaoh_broadcast_intent_at);
+}
+
 function stateFromRow(row, now = Date.now()) {
   if (!row) return null;
   const human = Number(row.rog_human_position);
@@ -37,7 +43,7 @@ function stateFromRow(row, now = Date.now()) {
 
   let status = 'ROG_REQUIRED';
   if (row.status === 'POSITION_ASSIGNED' || row.completed_at) status = 'USED';
-  else if (row.pharaoh_tx_hash) status = 'RECOVERY';
+  else if (hasPharaohRecoveryEvidence(row)) status = 'RECOVERY';
   else if (hasCompletedFreshRog(row)) {
     if (row.rog_claimed_at && claimExpires != null && claimExpires > now) status = 'CLAIMED';
     else if (expires != null && expires > now) status = 'ELIGIBLE';
@@ -139,7 +145,9 @@ async function authorize(wallet, sessionRef, dependencies = {}) {
     if (!row || String(row.wallet).toLowerCase() !== w) throw makeError('Sessione DIRECT non disponibile per il wallet', 'DIRECT_SESSION_NOT_FOUND');
     if (row.rog_eligibility_source !== PROTOCOL) throw makeError('Serve un nuovo ciclo ROG dedicato a questa posizione PHARAOH', 'DIRECT_FRESH_ROG_CYCLE_REQUIRED');
     if (row.status === 'POSITION_ASSIGNED' || row.completed_at) throw makeError('La HUMAN ROG di questo ciclo e gia stata utilizzata', 'ROG_PROOF_USED');
-    if (row.pharaoh_tx_hash) throw makeError('Pagamento PHARAOH gia rilevato: usare il recovery della stessa sessione', 'PHARAOH_RECOVERY_REQUIRED', true);
+    if (hasPharaohRecoveryEvidence(row, sessionManager)) {
+      throw makeError('Pagamento PHARAOH o intento di broadcast gia rilevato: usare il recovery della stessa sessione', 'PHARAOH_RECOVERY_REQUIRED', true);
+    }
     if (!hasCompletedFreshRog(row)) throw makeError('La nuova HUMAN ROG dedicata a questo ciclo non e ancora completata', 'DIRECT_ROG_POSITION_REQUIRED', true);
 
     const expiresAt = asMs(row.rog_eligibility_expires_at) || ((asMs(row.rog_eligibility_completed_at || row.rog_confirmed_at) || 0) + WINDOW_MS);
@@ -155,7 +163,10 @@ async function authorize(wallet, sessionRef, dependencies = {}) {
       throw makeError('Questa prova ROG ha gia un pagamento PHARAOH in corso', 'ROG_PROOF_CLAIMED', true);
     }
 
-    const claimExpires = new Date(Date.now() + CLAIM_MS);
+    const now = Date.now();
+    const claimExpiresMs = Math.min(now + CLAIM_MS, expiresAt);
+    if (claimExpiresMs <= now) throw makeError('La finestra ROG di 60 minuti e scaduta: serve una nuova donazione ROG', 'ROG_PROOF_EXPIRED');
+    const claimExpires = new Date(claimExpiresMs);
     const updated = await client.query(
       `UPDATE direct_donation_sessions
           SET rog_claimed_at=NOW(), rog_claim_expires_at=$2, updated_at=NOW()
@@ -180,17 +191,170 @@ async function authorize(wallet, sessionRef, dependencies = {}) {
   }
 }
 
-async function release(wallet, sessionRef, dependencies = {}) {
+async function release(wallet, sessionRef, options = {}, dependencies = {}) {
+  // Compatibilita con eventuali test/invocazioni che passavano dependencies come terzo argomento.
+  if (options && (options.pg || options.sessions || options.community) && !options.reason) {
+    dependencies = options;
+    options = {};
+  }
   const db = dependencies.pg || pg;
   const sessionManager = dependencies.sessions || sessions;
   const w = sessionManager.normalizeWallet(wallet);
-  const row = await sessionManager.requireSession(sessionRef, w);
-  if (row.status === 'POSITION_ASSIGNED' || row.pharaoh_tx_hash) return { success: true, released: false };
-  await db.query(
-    'UPDATE direct_donation_sessions SET rog_claimed_at=NULL, rog_claim_expires_at=NULL, updated_at=NOW() WHERE session_ref=$1 AND LOWER(wallet)=LOWER($2)',
-    [row.session_ref, w]
-  );
-  return { success: true, released: true };
+  const ref = sessionManager.normalizeSessionRef(sessionRef);
+  const reason = String(options?.reason || '').trim().toUpperCase();
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`PHARAOH:DIRECT:BROADCAST:${ref}`]);
+    let row = await sessionManager.requireSession(ref, w, client, { forUpdate: true });
+    const state = sessionManager.pharaohReconciliationState ? sessionManager.pharaohReconciliationState(row) : null;
+    if (row.status === 'POSITION_ASSIGNED' || row.completed_at || row.pharaoh_tx_hash || row.pharaoh_candidate_tx_hash) {
+      await client.query('COMMIT');
+      return { success: true, released: false, reconciliationRequired: !!(row.pharaoh_tx_hash || row.pharaoh_candidate_tx_hash), reconciliationState: state };
+    }
+
+    const activeIntent = sessionManager.hasActivePharaohBroadcastIntent
+      ? sessionManager.hasActivePharaohBroadcastIntent(row)
+      : !!(row.pharaoh_broadcast_intent_at && !row.pharaoh_broadcast_cancelled_at);
+    // A claim is never released as a generic cleanup operation. Under the
+    // server-first protocol the wallet can open only after an active intent;
+    // therefore the sole early-release case is the wallet's explicit reject
+    // for that same intent. All other claims expire naturally and remain
+    // fail-closed while their outcome is ambiguous.
+    if (!activeIntent || reason !== 'EXPLICIT_USER_REJECTION') {
+      await client.query('COMMIT');
+      return { success: true, released: false, reconciliationRequired: activeIntent, reconciliationState: state };
+    }
+    row = await sessionManager.cancelPharaohBroadcastIntent({
+      sessionRef: ref, wallet: w, reason: 'EXPLICIT_USER_REJECTION'
+    }, client);
+    await client.query('COMMIT');
+    return {
+      success: true,
+      released: true,
+      intentCancelled: activeIntent,
+      reconciliationRequired: false,
+      reconciliationState: sessionManager.pharaohReconciliationState ? sessionManager.pharaohReconciliationState(row) : null
+    };
+  } catch (error) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function markBroadcastIntent(wallet, sessionRef, dependencies = {}) {
+  const communityManager = dependencies.community || community;
+  const db = dependencies.pg || pg;
+  const sessionManager = dependencies.sessions || sessions;
+  const w = sessionManager.normalizeWallet(wallet);
+  const ref = sessionManager.normalizeSessionRef(sessionRef);
+  await communityManager.assertCommunityMember(w);
+
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`PHARAOH:DIRECT:BROADCAST:${ref}`]);
+    let row = await sessionManager.requireSession(ref, w, client, { forUpdate: true });
+    if (row.status === 'POSITION_ASSIGNED' || row.completed_at) {
+      await client.query('COMMIT');
+      return { success: true, intentRecorded: false, completed: true, session: sessionManager.publicSession(row) };
+    }
+    if (row.status === 'CANCELLED') throw makeError('La sessione DIRECT e annullata', 'DIRECT_SESSION_CANCELLED');
+    if (row.pharaoh_broadcast_intent_at && !row.pharaoh_broadcast_cancelled_at) {
+      await client.query('COMMIT');
+      return { success: true, intentRecorded: true, idempotent: true, session: sessionManager.publicSession(row) };
+    }
+    if (row.pharaoh_tx_hash || row.pharaoh_candidate_tx_hash) {
+      throw makeError('La sessione contiene gia una transazione PHARAOH da riconciliare', 'PHARAOH_RECOVERY_REQUIRED', true);
+    }
+    if (row.rog_eligibility_source !== PROTOCOL || !hasCompletedFreshRog(row)) {
+      throw makeError('La nuova HUMAN ROG dedicata a questo ciclo non e ancora completata', 'DIRECT_ROG_POSITION_REQUIRED', true);
+    }
+    const now = Date.now();
+    const eligibilityExpiry = asMs(row.rog_eligibility_expires_at) || ((asMs(row.rog_eligibility_completed_at || row.rog_confirmed_at) || 0) + WINDOW_MS);
+    if (!eligibilityExpiry || now >= eligibilityExpiry) throw makeError('La finestra ROG di 60 minuti e scaduta: serve una nuova donazione ROG', 'ROG_PROOF_EXPIRED');
+    const claimExpiry = asMs(row.rog_claim_expires_at);
+    if (!row.rog_claimed_at || claimExpiry == null || now >= claimExpiry) {
+      throw makeError('Autorizzazione PHARAOH scaduta: riverificare i requisiti', 'DIRECT_AUTHORIZATION_REQUIRED', true);
+    }
+    row = await sessionManager.recordPharaohBroadcastIntent({
+      sessionRef: ref,
+      wallet: w,
+      claimExpiresAt: new Date(claimExpiry).toISOString(),
+      eligibilityExpiresAt: new Date(eligibilityExpiry).toISOString()
+    }, client);
+    await client.query('COMMIT');
+    return { success: true, intentRecorded: true, idempotent: false, session: sessionManager.publicSession(row) };
+  } catch (error) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function attachCandidate(wallet, sessionRef, txHash, source = 'BROWSER', replacesTxHash = null, dependencies = {}) {
+  if (replacesTxHash && typeof replacesTxHash === 'object' && (replacesTxHash.pg || replacesTxHash.sessions || replacesTxHash.community)) {
+    dependencies = replacesTxHash;
+    replacesTxHash = null;
+  }
+  const communityManager = dependencies.community || community;
+  const db = dependencies.pg || pg;
+  const sessionManager = dependencies.sessions || sessions;
+  const w = sessionManager.normalizeWallet(wallet);
+  const ref = sessionManager.normalizeSessionRef(sessionRef);
+  const canonicalHash = sessionManager.normalizeHash(txHash, 'pharaohCandidateTxHash');
+  await communityManager.assertCommunityMember(w);
+
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`PHARAOH:DIRECT:BROADCAST:${ref}`]);
+    let row = await sessionManager.requireSession(ref, w, client, { forUpdate: true });
+    if (row.status === 'CANCELLED') throw makeError('La sessione DIRECT e annullata', 'DIRECT_SESSION_CANCELLED');
+    if (row.pharaoh_tx_hash && String(row.pharaoh_tx_hash).toLowerCase() !== canonicalHash) {
+      throw makeError('La sessione DIRECT e gia associata a una tx PHARAOH differente', 'DIRECT_SESSION_PROOF_CONFLICT');
+    }
+    // Compatibilita controllata per client precedenti: il primo finish puo
+    // registrare intento+candidato soltanto finche claim e finestra ROG sono vivi.
+    if (!row.pharaoh_broadcast_intent_at || row.pharaoh_broadcast_cancelled_at) {
+      if (row.rog_eligibility_source !== PROTOCOL || !hasCompletedFreshRog(row)) {
+        throw makeError('Intento di broadcast PHARAOH non registrato sul server', 'DIRECT_BROADCAST_INTENT_REQUIRED');
+      }
+      const now = Date.now();
+      const eligibilityExpiry = asMs(row.rog_eligibility_expires_at) || ((asMs(row.rog_eligibility_completed_at || row.rog_confirmed_at) || 0) + WINDOW_MS);
+      const claimExpiry = asMs(row.rog_claim_expires_at);
+      if (!eligibilityExpiry || now >= eligibilityExpiry) throw makeError('La finestra ROG di 60 minuti e scaduta: serve una riconciliazione verificata', 'ROG_PROOF_EXPIRED');
+      if (!row.rog_claimed_at || claimExpiry == null || now >= claimExpiry) {
+        throw makeError('Autorizzazione PHARAOH scaduta: serve una riconciliazione verificata', 'DIRECT_AUTHORIZATION_REQUIRED', true);
+      }
+      row = await sessionManager.recordPharaohBroadcastIntent({
+        sessionRef: ref,
+        wallet: w,
+        claimExpiresAt: new Date(claimExpiry).toISOString(),
+        eligibilityExpiresAt: new Date(eligibilityExpiry).toISOString()
+      }, client);
+    }
+
+    row = await sessionManager.recordPharaohCandidate({
+      sessionRef: ref, wallet: w, txHash: canonicalHash, source, replacesTxHash
+    }, client);
+    await client.query('COMMIT');
+    return {
+      success: true,
+      candidateRecorded: true,
+      idempotent: String(row.pharaoh_candidate_tx_hash || '').toLowerCase() === canonicalHash,
+      reconciliationState: sessionManager.pharaohReconciliationState ? sessionManager.pharaohReconciliationState(row) : 'CANDIDATE_RECORDED',
+      session: sessionManager.publicSession(row)
+    };
+  } catch (error) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function assertClaimReady(wallet, sessionRef, dependencies = {}) {
@@ -205,6 +369,16 @@ async function assertClaimReady(wallet, sessionRef, dependencies = {}) {
   // senza chiedere un secondo pagamento o un nuovo claim.
   if (row.pharaoh_tx_hash) {
     return { alreadyCompleted: false, recovery: true, rogHumanPosition: Number(row.rog_human_position) || null, session: row };
+  }
+
+  // Un hash candidato, registrato dopo un intento server valido, puo essere
+  // verificato anche dopo la scadenza del claim/finestra senza chiedere un
+  // secondo pagamento. Non equivale a un accredito: il verifier resta obbligatorio.
+  if (row.pharaoh_broadcast_intent_at && !row.pharaoh_broadcast_cancelled_at && row.pharaoh_candidate_tx_hash) {
+    return { alreadyCompleted: false, recovery: true, candidateRecovery: true, rogHumanPosition: Number(row.rog_human_position) || null, session: row };
+  }
+  if (row.pharaoh_broadcast_intent_at && !row.pharaoh_broadcast_cancelled_at) {
+    throw makeError('Intento PHARAOH presente ma hash ancora sconosciuto: riconciliare la stessa sessione', 'DIRECT_RECONCILIATION_HASH_REQUIRED', true);
   }
 
   if (row.rog_eligibility_source !== PROTOCOL) {
@@ -235,4 +409,16 @@ async function assertClaimReady(wallet, sessionRef, dependencies = {}) {
   return { alreadyCompleted: false, rogHumanPosition: Number(row.rog_human_position), session: row };
 }
 
-module.exports = { getEligibility, authorize, release, assertClaimReady, stateFromRow, WINDOW_MS, CLAIM_MS, PROTOCOL };
+module.exports = {
+  getEligibility,
+  authorize,
+  release,
+  markBroadcastIntent,
+  attachCandidate,
+  assertClaimReady,
+  stateFromRow,
+  hasPharaohRecoveryEvidence,
+  WINDOW_MS,
+  CLAIM_MS,
+  PROTOCOL
+};

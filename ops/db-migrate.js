@@ -9,16 +9,6 @@ const ROOT = path.resolve(__dirname, '..');
 const PLAN_PATH = path.join(ROOT, 'database', 'migration-plan.json');
 const LOCK_KEY = '42824024';
 
-// Production DB evidence (14 Oct 2026): this single 0022 checksum was already
-// recorded/applied. The original 25 migration-plan records and all SQL bytes
-// remain immutable. A legacy hash is accepted ONLY for this exact V4 source
-// checksum, AND only after read-only schema/data invariants are verified.
-const HISTORICAL_0022 = Object.freeze({
-  id: '0022_cassa_posizione_completa',
-  currentSha256: '85bcabd00bd2fb904f8d7d895a0976ff602d7736a9ed9e3e5c9eac9d232f8358',
-  appliedSha256: '1e78baf17ebe367332ed99254605b045d13831c57727cd9bda44ef91da86327f'
-});
-
 function sha256(content) {
   return crypto.createHash('sha256').update(content).digest('hex');
 }
@@ -41,18 +31,12 @@ function loadPlan() {
     }
     const sql = fs.readFileSync(absolutePath, 'utf8');
     const actualChecksum = sha256(sql);
-    const acceptedAppliedSha256 = Array.isArray(item.acceptedAppliedSha256) ? [...item.acceptedAppliedSha256] : [];
+    const acceptedAppliedSha256 = Array.isArray(item.acceptedAppliedSha256) ? item.acceptedAppliedSha256 : [];
     for (const legacy of acceptedAppliedSha256) {
       if (!/^[a-f0-9]{64}$/.test(String(legacy))) throw new Error(`CHECKSUM_LEGACY_NON_VALIDO:${item.id}`);
     }
     if (actualChecksum !== item.sha256) {
       throw new Error(`CHECKSUM_FILE_MIGRAZIONE_NON_VALIDO:${item.id}`);
-    }
-    if (item.id === HISTORICAL_0022.id) {
-      if (actualChecksum !== HISTORICAL_0022.currentSha256) {
-        throw new Error('0022_CURRENT_SQL_HASH_NOT_APPROVED');
-      }
-      acceptedAppliedSha256.push(HISTORICAL_0022.appliedSha256);
     }
     const projection = prepareMigrationSql({ ...item, sql });
     return Object.freeze({ ...item, acceptedAppliedSha256, absolutePath, sql, checksum: actualChecksum, ...projection });
@@ -113,68 +97,6 @@ function assertConsistent(comparison) {
   }
 }
 
-// This is a READ-ONLY prerequisite for approving the single historic 0022
-// checksum on an existing database. If any invariant fails, the migration
-// transaction is rolled back; no checksum is rewritten and 0022 is not replayed.
-async function assertHistorical0022Schema(client, applied) {
-  const historical = applied.some(item =>
-    item.id === HISTORICAL_0022.id &&
-    String(item.checksum).trim() === HISTORICAL_0022.appliedSha256
-  );
-  if (!historical) return false;
-
-  const result = await client.query(`
-    SELECT
-      (SELECT COUNT(*)::bigint FROM public.posizioni
-        WHERE tipo = 'ROLLOVER') AS rollovers,
-      (SELECT COUNT(*)::bigint FROM public.posizioni
-        WHERE tipo = 'CASSA') AS cassa_count,
-      (SELECT COUNT(*)::bigint
-         FROM public.posizioni p
-         LEFT JOIN public.tavole t ON t.id = p.tavola_id
-         LEFT JOIN public.accounts a ON a.id = p.account_id
-         LEFT JOIN public.tavole s ON s.id = p.sdoppiamento_tavola_id
-         WHERE p.tipo = 'CASSA' AND (
-           t.id IS NULL OR t.sezione IS DISTINCT FROM 'ENTRATA'
-           OR t.livello IS DISTINCT FROM 0 OR t.numero <= 1
-           OR p.casella IS DISTINCT FROM 1
-           OR p.numero_posizionale IS DISTINCT FROM (((t.numero - 1) * 6) + 1)
-           OR a.id IS NULL OR a.tipo IS DISTINCT FROM 'PRIMARIO'
-           OR a.account_key IS DISTINCT FROM ('SYSTEM:CASSA:ENTRATA:' || p.numero_posizionale::text)
-           OR a.origin_kind IS DISTINCT FROM 'CASSA_ENTRY'
-           OR s.id IS NULL OR s.sezione IS DISTINCT FROM 'ENTRATA'
-           OR s.livello IS DISTINCT FROM 0 OR s.tipo IS DISTINCT FROM 'SDOPPIAMENTO'
-           OR s.numero IS DISTINCT FROM p.numero_posizionale + 1
-         )) AS cassa_invalide,
-      (SELECT COUNT(*)::bigint
-         FROM public.tavole t
-         LEFT JOIN public.posizioni p
-           ON p.sdoppiamento_tavola_id = t.id
-          AND p.numero_posizionale IS NOT NULL
-         LEFT JOIN public.tavole pt ON pt.id = p.tavola_id
-         WHERE t.sezione = 'ENTRATA' AND t.livello = 0
-           AND t.tipo = 'SDOPPIAMENTO' AND t.status = 'APERTA'
-           AND (p.id IS NULL OR pt.id IS NULL
-                OR pt.sezione IS DISTINCT FROM 'ENTRATA'
-                OR pt.livello IS DISTINCT FROM 0
-                OR t.numero IS DISTINCT FROM p.numero_posizionale + 1)
-      ) AS tavole_personali_invalide
-  `);
-  const row = result.rows?.length === 1 ? result.rows[0] : null;
-  const keys = ['rollovers', 'cassa_count', 'cassa_invalide', 'tavole_personali_invalide'];
-  if (!row || keys.some(k => !/^(0|[1-9][0-9]*)$/.test(String(row[k])))) {
-    throw new Error('0022_LEGACY_SCHEMA_READ_ONLY_UNAVAILABLE');
-  }
-  if (BigInt(row.cassa_count) === 0n ||
-      BigInt(row.rollovers) !== 0n ||
-      BigInt(row.cassa_invalide) !== 0n ||
-      BigInt(row.tavole_personali_invalide) !== 0n) {
-    throw new Error('0022_LEGACY_SCHEMA_INVARIANTS_FAILED');
-  }
-  console.log('0022_LEGACY_SCHEMA_READ_ONLY: OK');
-  return true;
-}
-
 async function withClient(operation, poolModule) {
   validateDatabaseUrl();
   const pg = poolModule || require('../pg-connection-manager');
@@ -193,7 +115,6 @@ async function status(poolModule) {
     const applied = await readApplied(client);
     const comparison = comparePlan(plan, applied);
     assertConsistent(comparison);
-    await assertHistorical0022Schema(client, applied);
     return { plan, applied, ...comparison };
   }, poolModule);
 }
@@ -216,7 +137,6 @@ async function migrate(poolModule) {
       const applied = await readApplied(client);
       const comparison = comparePlan(plan, applied);
       assertConsistent(comparison);
-      await assertHistorical0022Schema(client, applied);
       for (const item of comparison.pending) {
         // The caller owns BEGIN/COMMIT. Historical SQL bytes/checksums stay intact.
         await client.query(item.executionSql);
@@ -286,8 +206,6 @@ module.exports = {
   validateDatabaseUrl,
   comparePlan,
   assertConsistent,
-  assertHistorical0022Schema,
-  HISTORICAL_0022,
   status,
   migrate,
   sanitizeError

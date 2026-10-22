@@ -24,7 +24,7 @@ async function run(env=process.env) {
   const userObjects=(await c.query("SELECT count(*)::text AS count FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND c.relkind IN ('r','p','v','m','f','S')")).rows[0].count;
   if(userObjects!=='0')throw A.error('PG_REHEARSAL_DATABASE_NOT_EMPTY');
   await c.query('BEGIN');begun=true;await c.query("SET LOCAL search_path=public; SET LOCAL statement_timeout='30s'; SET LOCAL lock_timeout='3s'; SET LOCAL TIME ZONE 'UTC'");
-  const plan=loadPlan();assert.equal(plan.length,28);
+  const plan=loadPlan();assert.equal(plan.length,30, 'QA requires the certified 30-migration plan');
   for(const step of plan.slice(0,25))await c.query(step.executionSql);
   checks++;
   const T='0x'+'1'.repeat(40),U='0x'+'2'.repeat(40),TOKEN='0x'+'3'.repeat(40),H='0x'+'4'.repeat(64);
@@ -62,7 +62,7 @@ async function run(env=process.env) {
   assert.equal((await c.query('SELECT count(*)::text AS n FROM accounts WHERE id=ANY($1::bigint[])',[fixtureAccounts])).rows[0].n,'13');checks++;
   await c.query('ROLLBACK');begun=false;
   assert.equal((await c.query("SELECT count(*)::text AS count FROM pg_tables WHERE schemaname='public'")).rows[0].count,'0');checks++;
-  return {status:'PASS',checks,syntheticLegacyWallets:13,syntheticLegacyPositions:13,syntheticLegacyDonations:13,pendingGiftsInFixture:0,migrations:27,rollbackConfirmed:true,scope:'REAL PostgreSQL empty-schema/forward-DDL/ledger tests using synthetic settlement proofs; NOT live-copy adoption, PostgreSQL concurrency, HTTP or chain E2E'};
+  return {status:'PASS',checks,syntheticLegacyWallets:13,syntheticLegacyPositions:13,syntheticLegacyDonations:13,pendingGiftsInFixture:0,migrations:plan.length,rollbackConfirmed:true,scope:'REAL PostgreSQL empty-schema/forward-DDL/ledger tests using synthetic settlement proofs; NOT live-copy adoption, PostgreSQL concurrency, HTTP or chain E2E'};
  }finally{if(c){if(begun)try{await c.query('ROLLBACK');}catch(_){}c.release();}await pool.end();}
 }
 if(require.main===module)run().then(r=>console.log(JSON.stringify(r,null,2))).catch(e=>{console.error(JSON.stringify({status:'NOT_PASS',code:e.code||'PG_REHEARSAL_FAILED'}));process.exitCode=1;});

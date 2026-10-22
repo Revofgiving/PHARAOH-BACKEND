@@ -27,6 +27,8 @@ const cfg={
 
 const iface=new ethers.Interface(registry.REGISTRY_ABI);
 
+const BLOCK_HASH='0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd';
+
 function fixture(){
   const receipts=new Map();
   const logs=[];
@@ -52,7 +54,8 @@ function fixture(){
       address:A(6),
       topics:encoded.topics,
       data:encoded.data,
-      transactionHash:txHash
+      transactionHash:txHash,
+      blockHash:BLOCK_HASH
     };
 
     const receipt={
@@ -60,6 +63,7 @@ function fixture(){
       transactionHash:txHash,
       status:1,
       blockNumber:12,
+      blockHash:BLOCK_HASH,
       logs:[log]
     };
 
@@ -96,6 +100,7 @@ function fixture(){
     provider:{
       getNetwork:async()=>({chainId:137n}),
       getCode:async()=>'0x60006000',
+      getBlockNumber:async()=>14,
       getTransactionReceipt:async hash=>receipts.get(String(hash).toLowerCase())||null,
       getLogs:async()=>logs
     },

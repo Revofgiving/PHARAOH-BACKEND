@@ -5,6 +5,7 @@ const Module = require('node:module');
 
 const wallet = '0x1111111111111111111111111111111111111111';
 const wallet2 = '0x2222222222222222222222222222222222222222';
+const wallet3 = '0x3333333333333333333333333333333333333333';
 const treasury = '0x0000000000000000000000000000000000000002';
 const hash = (byte) => `0x${byte.repeat(64)}`;
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -16,6 +17,7 @@ class MemoryPg {
   constructor() {
     this.sessions = new Map();
     this.donations = [];
+    this.candidates = [];
     this.positionSeq = 0;
   }
   rows() { return [...this.sessions.values()]; }
@@ -24,7 +26,7 @@ class MemoryPg {
   uniqueConflict(targetRef, patch) {
     const checks = [
       ['rog_usdc_tx_hash', true], ['rog_register_tx_hash', true], ['rog_donation_id', false],
-      ['rog_human_position', false], ['pharaoh_tx_hash', true], ['registry_tx_hash', true]
+      ['rog_human_position', false], ['pharaoh_tx_hash', true], ['pharaoh_candidate_tx_hash', true], ['registry_tx_hash', true]
     ];
     for (const [field, lower] of checks) {
       if (patch[field] == null) continue;
@@ -60,10 +62,38 @@ class MemoryClient {
         rog_registration_candidate_at: null, rog_fulfillment_status: 'WAITING_PAYMENT', rog_human_position: null,
         rog_fulfillment_retry_count: 0, rog_fulfillment_last_error: null, rog_fulfillment_next_retry_at: null,
         rog_fulfillment_updated_at: null, rog_eligibility_source: null, rog_eligibility_completed_at: null,
-        rog_eligibility_expires_at: null, rog_claimed_at: null, rog_claim_expires_at: null
+        rog_eligibility_expires_at: null, rog_claimed_at: null, rog_claim_expires_at: null,
+        pharaoh_broadcast_intent_at: null, pharaoh_broadcast_claim_expires_at: null,
+        pharaoh_broadcast_eligibility_expires_at: null, pharaoh_broadcast_cancelled_at: null,
+        pharaoh_broadcast_cancel_reason: null, pharaoh_candidate_tx_hash: null,
+        pharaoh_candidate_recorded_at: null, pharaoh_candidate_source: null,
+        pharaoh_reconciliation_last_error: null, pharaoh_reconciliation_updated_at: null
       };
       this.db.sessions.set(ref, row);
       return { rows: [clone(row)] };
+    }
+
+    if (/SELECT \* FROM direct_pharaoh_tx_candidates/i.test(compact)) {
+      const ref = String(values[0]).toLowerCase(), tx = String(values[1]).toLowerCase();
+      const found = this.db.candidates.find(c => c.session_ref === ref && c.tx_hash === tx);
+      return { rows: found ? [clone(found)] : [] };
+    }
+    if (/SELECT COUNT\(\*\)::int AS count FROM direct_pharaoh_tx_candidates/i.test(compact)) {
+      const ref = String(values[0]).toLowerCase();
+      return { rows: [{ count: this.db.candidates.filter(c => c.session_ref === ref).length }] };
+    }
+    if (/INSERT INTO direct_pharaoh_tx_candidates/i.test(compact)) {
+      const [sessionRef, txHash, source, replacesTxHash] = values;
+      const ref = String(sessionRef).toLowerCase(), tx = String(txHash).toLowerCase();
+      if (this.db.candidates.some(c => c.tx_hash === tx)) { const e = new Error('duplicate key'); e.code = '23505'; throw e; }
+      const candidate = { id: this.db.candidates.length + 1, session_ref: ref, tx_hash: tx, source, replaces_tx_hash: replacesTxHash ? String(replacesTxHash).toLowerCase() : null, recorded_at: new Date().toISOString(), verified_at: null, last_error: null };
+      this.db.candidates.push(candidate); return { rows: [clone(candidate)] };
+    }
+    if (/UPDATE direct_pharaoh_tx_candidates SET verified_at/i.test(compact)) {
+      const ref = String(values[0]).toLowerCase(), tx = String(values[1]).toLowerCase();
+      const found = this.db.candidates.find(c => c.session_ref === ref && c.tx_hash === tx);
+      if (found) { found.verified_at ||= new Date().toISOString(); found.last_error = null; }
+      return { rows: found ? [clone(found)] : [] };
     }
 
     if (/SELECT \* FROM direct_donation_sessions WHERE session_ref = \$1/i.test(compact) || /SELECT \* FROM direct_donation_sessions WHERE session_ref=\$1/i.test(compact)) {
@@ -258,20 +288,44 @@ async function run() {
   assert.equal(a1.authorized, true); checks++;
   // Second browser/device cannot claim concurrently.
   await expectCode(() => eligibility.authorize(wallet, s1), 'ROG_PROOF_CLAIMED'); checks++;
-  // Explicit release + re-authorize is allowed before PHARAOH tx.
-  assert.equal((await eligibility.release(wallet, s1)).released, true);
+  // A claim without a server broadcast intent cannot be cleared early: it
+  // expires naturally, because no generic cleanup may authorize a second try.
+  assert.equal((await eligibility.release(wallet, s1, { reason: 'EXPLICIT_USER_REJECTION' })).released, false);
+  row(s1).rog_claim_expires_at = new Date(Date.now() - 1000).toISOString();
   assert.equal((await eligibility.authorize(wallet, s1)).authorized, true); checks++;
   // Claim timeout is fail-closed, then a fresh authorize repairs it.
   row(s1).rog_claim_expires_at = new Date(Date.now() - 1000).toISOString();
   await expectCode(() => direct.assertReadyForPharaoh({ wallet, sessionRef: s1 }), 'DIRECT_AUTHORIZATION_REQUIRED');
-  assert.equal((await eligibility.authorize(wallet, s1)).authorized, true); checks++;
+  row(s1).rog_eligibility_expires_at = new Date(Date.now() + 45_000).toISOString();
+  const capped = await eligibility.authorize(wallet, s1);
+  assert.equal(capped.authorized, true);
+  assert.ok(Date.parse(capped.claimExpiresAt) <= Date.parse(capped.expiresAt), 'claim non deve oltrepassare la finestra ROG'); checks++;
 
   const pharaoh1 = hash('4');
-  const p1 = await donationFlow.processaDonoEntrataWallet({ wallet, txHash: pharaoh1, sessionRef: s1, nome: 'QA ONE' });
+  const intent1 = await eligibility.markBroadcastIntent(wallet, s1);
+  assert.equal(intent1.intentRecorded, true);
+  const candidate1 = await eligibility.attachCandidate(wallet, s1, pharaoh1, 'TEST');
+  assert.equal(candidate1.candidateRecorded, true);
+  assert.equal(mem.donations.length, 0, 'intento/hash candidato non devono creare posizioni');
+  assert.equal((await eligibility.release(wallet, s1)).released, false, 'un intento non deve essere liberato senza rifiuto esplicito');
+  await expectCode(() => eligibility.attachCandidate(wallet, s1, hash('9'), 'TEST'), 'DIRECT_SESSION_PROOF_CONFLICT');
+  const replacementCandidate = hash('8');
+  const replaced = await eligibility.attachCandidate(wallet, s1, replacementCandidate, 'WALLET_REPLACEMENT', pharaoh1);
+  assert.equal(replaced.candidateRecorded, true);
+  assert.equal(mem.candidates.length, 2, 'la sostituzione deve essere append-only');
+  assert.equal(mem.candidates[0].tx_hash, pharaoh1);
+  assert.equal(mem.candidates[1].replaces_tx_hash, pharaoh1);
+  row(s1).rog_claim_expires_at = new Date(Date.now() - 1000).toISOString();
+  row(s1).rog_eligibility_expires_at = new Date(Date.now() - 1000).toISOString();
+  const sameRecovery = await direct.startSession(wallet);
+  assert.equal(sameRecovery.session.sessionRef, s1, 'sessione incerta non deve essere cancellata dopo scadenza');
+  assert.equal(sameRecovery.recovery, true);
+  assert.equal((await eligibility.getEligibility(wallet)).rog, 'RECOVERY'); checks++;
+  const p1 = await donationFlow.processaDonoEntrataWallet({ wallet, txHash: replacementCandidate, sessionRef: s1, nome: 'QA ONE' });
   assert.equal(p1.numeroPosizioni, 1);
   assert.equal(row(s1).status, 'POSITION_ASSIGNED');
   assert.equal(mem.donations.length, 1); checks++;
-  const retry1 = await donationFlow.processaDonoEntrataWallet({ wallet, txHash: pharaoh1, sessionRef: s1, nome: 'QA ONE' });
+  const retry1 = await donationFlow.processaDonoEntrataWallet({ wallet, txHash: replacementCandidate, sessionRef: s1, nome: 'QA ONE' });
   assert.equal(retry1.idempotent, true);
   assert.equal(mem.donations.length, 1); checks++;
 
@@ -295,6 +349,21 @@ async function run() {
   assert.equal(row(s2).status, 'POSITION_ASSIGNED');
   assert.equal(mem.donations.length, 2); checks++;
 
+  // Solo il rifiuto esplicito del wallet puo annullare un intento senza hash.
+  const sReject = (await direct.startSession(wallet3)).session.sessionRef;
+  await completeFreshRog({ w: wallet3, sessionRef: sReject, usdcTx: hash('a'), registerTx: hash('b'), donationId: 1003, humanPosition: 7003 });
+  await eligibility.authorize(wallet3, sReject);
+  await eligibility.markBroadcastIntent(wallet3, sReject);
+  const rejected = await eligibility.release(wallet3, sReject, { reason: 'EXPLICIT_USER_REJECTION' });
+  assert.equal(rejected.released, true);
+  assert.equal(rejected.intentCancelled, true);
+  assert.equal(row(sReject).pharaoh_broadcast_cancel_reason, 'EXPLICIT_USER_REJECTION');
+  assert.equal(sessions.hasPharaohReconciliationEvidence(row(sReject)), false);
+  assert.equal((await eligibility.authorize(wallet3, sReject)).authorized, true);
+  const restartedIntent = await eligibility.markBroadcastIntent(wallet3, sReject);
+  assert.equal(restartedIntent.intentRecorded, true);
+  assert.equal(row(sReject).pharaoh_broadcast_cancelled_at, null); checks++;
+
   // HUMAN older than cycle is rejected centrally even if a ROG completion tries to return it.
   const s3 = (await direct.startSession(wallet2)).session.sessionRef;
   currentHumanPosition = 8001;
@@ -313,7 +382,7 @@ async function run() {
     status: 'PASS', checks,
     invariant: '1 NEW ROG donation -> 1 NEW HUMAN ROG -> 1 PHARAOH position',
     assignedSessions: used.length, pharaohPositions: mem.positionSeq,
-    cases: ['historical-human-rejected','proof-before-cycle-rejected','fresh-cycle-pass','double-browser-claim-blocked','claim-release','claim-timeout','idempotent-retry','rog-replay-blocked','pharaoh-tx-known-recovery','stale-human-rejected','second-position-new-cycle'],
+    cases: ['historical-human-rejected','proof-before-cycle-rejected','fresh-cycle-pass','double-browser-claim-blocked','claim-generic-release-blocked','claim-timeout','claim-capped-by-rog-window','server-broadcast-intent','explicit-user-rejection-cancels-intent','candidate-no-credit','candidate-conflict','candidate-replacement-append-only','recovery-after-claim-and-rog-expiry','idempotent-retry','rog-replay-blocked','pharaoh-tx-known-recovery','stale-human-rejected','second-position-new-cycle'],
     scope: 'Golden application-flow E2E with in-memory PostgreSQL/chain/ROG adapters; no production, no live chain, no real PostgreSQL server'
   }, null, 2));
 }

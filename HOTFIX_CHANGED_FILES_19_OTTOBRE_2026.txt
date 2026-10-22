@@ -1,0 +1,5 @@
+rog-donation-manager.js
+scripts/test-direct-gift-static.js
+HOTFIX_19_OTTOBRE_2026_DIRECT_DONATION.md
+HOTFIX_RELEASE_ID_19_OTTOBRE.txt
+00_LEGGIMI_HOTFIX_19_OTTOBRE_2026.txt

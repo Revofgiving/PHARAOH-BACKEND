@@ -13,7 +13,7 @@ const gate=require('../ops/v4-release-gate'),migrations=require('../ops/db-migra
   ['migrationAllowed',s=>{s.migrationAllowed=false;},/MIGRATIONS_NOT_ALLOWED_FOR_RELEASE/],
   ['registryContractId',s=>{s.registryContractId='PHARAOH_TREASURY_REGISTRY_V3';},/REGISTRY_CONTRACT_ID_NOT_V4/],
   ['registryAbiVersion',s=>{s.registryAbiVersion='3.0.0';},/REGISTRY_ABI_VERSION_NOT_4_0_0/],
-  ['tests',s=>{s.testSummary.FAIL=1;s.testSummary.PASS=51;},/TEST_PASS_NOT_52|TEST_FAILURES_PRESENT/]
+  ['tests',s=>{s.testSummary.FAIL=1;s.testSummary.PASS=52;},/TEST_PASS_NOT_53|TEST_FAILURES_PRESENT/]
  ]){
   const bad=JSON.parse(JSON.stringify(state));mutate(bad);
   assert.throws(()=>gate.assertReleaseAllowed(bad),expected,field);scenarios++;
@@ -52,8 +52,13 @@ const gate=require('../ops/v4-release-gate'),migrations=require('../ops/db-migra
  }
  const oldPlan=JSON.parse(fs.readFileSync(path.join(root,'evidence/migration-plan-5oct.json'),'utf8'));
  const plan=JSON.parse(fs.readFileSync(path.join(root,'database/migration-plan.json'),'utf8'));
- assert.deepEqual(plan.migrations.slice(0,25),oldPlan.migrations);
- assert.equal(migrations.loadPlan().length,28);assert.equal(baseline.matchedFiles,114);
+ // The 0022 SQL is immutable; only its explicitly verified applied checksum is allowed as historical metadata.
+ const expectedPlan=JSON.parse(JSON.stringify(oldPlan.migrations));
+ const historical0022=expectedPlan.find(x=>x.id==='0022_cassa_posizione_completa');
+ assert.ok(historical0022,'HISTORICAL_0022_NOT_IN_BASELINE');
+ historical0022.acceptedAppliedSha256=['1e78baf17ebe367332ed99254605b045d13831c57727cd9bda44ef91da86327f'];
+ assert.deepEqual(plan.migrations.slice(0,25),expectedPlan,'ONLY_VERIFIED_0022_APPLIED_CHECKSUM_EXCEPTION_ALLOWED');
+ assert.equal(migrations.loadPlan().length,30);assert.equal(baseline.matchedFiles,114);
  assert.equal(securityOverlayVerified,1,'SECURITY_OVERLAY_PACKAGE_LOCK_NOT_VERIFIED');scenarios++;
 
  console.log(`V4_RELEASE_SOURCE_PASS: ${scenarios} scenarios; deployable V4 release gate ALLOW, fail-closed tamper checks, Docker build/runtime preflights wired, ${preserved} SQL baseline files byte-identical, package-lock security overlay verified, original 25 plan records retained, ${legacyTests} original tests archived unchanged; no production deploy executed`);

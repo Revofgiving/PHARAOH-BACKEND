@@ -40,6 +40,8 @@ function runStaticChecks() {
     'database/0026_economic_ledger_s0.sql',
     'database/0027_continuity_non_genealogical.sql',
     'database/0028_secondary_function_identity_scope.sql',
+    'database/0029_direct_pharaoh_server_reconciliation.sql',
+    'database/0030_direct_session_before_community.sql',
     'economic-ledger.js', 'economic-store.js', 'economic-flow.js',
     's0-materializer.js', 'treasury-transfer-manager.js', 'treasury-chain-adapter.js',
     'payout-economic-adapter.js', 'economic-worker.js', 'continuity-manager.js',
@@ -63,10 +65,12 @@ function runStaticChecks() {
 
   try {
     const plan = migrations.loadPlan();
-    check(plan.length === 28, 'PIANO_MIGRAZIONI_DEVE_AVERE_28_STEP', failures);
+    check(plan.length === 30, 'PIANO_MIGRAZIONI_DEVE_AVERE_30_STEP', failures);
     check(plan.some(m => m.id === '0026_economic_ledger_s0'), 'ECONOMIC_LEDGER_MIGRATION_MISSING', failures);
     check(plan.some(m => m.id === '0027_continuity_non_genealogical'), 'CONTINUITY_MIGRATION_MISSING', failures);
     check(plan.some(m => m.id === '0028_secondary_function_identity_scope'), 'SECONDARY_IDENTITY_SCOPE_MIGRATION_MISSING', failures);
+    check(plan.some(m => m.id === '0029_direct_pharaoh_server_reconciliation'), 'DIRECT_PHARAOH_RECONCILIATION_MIGRATION_MISSING', failures);
+    check(plan.some(m => m.id === '0030_direct_session_before_community'), 'DIRECT_SESSION_BEFORE_COMMUNITY_MIGRATION_MISSING', failures);
     check(plan.some(m => m.id === '0004_cross_movements'), 'MIGRATION_0004_MANCANTE', failures);
     check(plan.some(m => m.id === '0005_rha_dual_300_200'), 'MIGRATION_0005_MANCANTE', failures);
     check(plan.some(m => m.id === '0006_thot_humanitarian_reentry'), 'MIGRATION_0006_MANCANTE', failures);
@@ -96,6 +100,9 @@ function runStaticChecks() {
 
   const api = read('api-server.js');
   check(api.includes("app.post('/api/donazione/diretta/session'"), 'DIRECT_SESSION_ROUTE_MANCANTE', failures);
+  check(api.includes("app.post('/api/donazione/diretta/broadcast/intent'"), 'DIRECT_BROADCAST_INTENT_ROUTE_MANCANTE', failures);
+  check(api.includes("app.post('/api/donazione/diretta/broadcast/candidate'"), 'DIRECT_BROADCAST_CANDIDATE_ROUTE_MANCANTE', failures);
+  check(api.includes("app.post('/api/donazione/diretta/reconcile'"), 'DIRECT_RECONCILIATION_ROUTE_MANCANTE', failures);
   check(api.includes("app.post('/api/gift/create'"), 'GIFT_ROUTE_MANCANTE', failures);
   check(api.includes("crossAuth.verifyRequest(req, 'URANUS')"), 'URANUS_HMAC_GATE_MANCANTE', failures);
   check(api.includes("app.post('/api/cross/donation/entrata'"), 'URANUS_CROSS_ROUTE_MANCANTE', failures);

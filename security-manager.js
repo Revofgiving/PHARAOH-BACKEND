@@ -378,6 +378,13 @@ function validateEnvironment() {
   const workerInterval = Number(process.env.CROSS_OUTBOUND_WORKER_INTERVAL_MS || 60000);
   issue(!Number.isInteger(workerInterval) || workerInterval < 10000 || workerInterval > 3600000, 'CROSS_OUTBOUND_WORKER_INTERVAL_MS_NON_VALIDO');
 
+  const directReconciliationWorkerEnabled = String(process.env.DIRECT_PHARAOH_RECONCILIATION_WORKER_ENABLED || '0');
+  issue(!['0','1'].includes(directReconciliationWorkerEnabled), 'DIRECT_PHARAOH_RECONCILIATION_WORKER_ENABLED_DEVE_ESSERE_0_O_1');
+  const directReconciliationInterval = Number(process.env.DIRECT_PHARAOH_RECONCILIATION_WORKER_INTERVAL_MS || 30000);
+  issue(!Number.isInteger(directReconciliationInterval) || directReconciliationInterval < 15000 || directReconciliationInterval > 3600000, 'DIRECT_PHARAOH_RECONCILIATION_WORKER_INTERVAL_MS_NON_VALIDO');
+  const directReconciliationBatch = Number(process.env.DIRECT_PHARAOH_RECONCILIATION_WORKER_BATCH || 10);
+  issue(!Number.isInteger(directReconciliationBatch) || directReconciliationBatch < 1 || directReconciliationBatch > 50, 'DIRECT_PHARAOH_RECONCILIATION_WORKER_BATCH_NON_VALIDO');
+
   return { ok: missing.length === 0, missing: [...new Set(missing)], warnings: [...new Set(warnings)] };
 }
 
