@@ -34,11 +34,51 @@ function hasPharaohRecoveryEvidence(row, sessionManager = sessions) {
     : !!(row?.pharaoh_tx_hash || row?.pharaoh_candidate_tx_hash || row?.pharaoh_broadcast_intent_at);
 }
 
+// Incident recovery 1178: explicit, narrowly scoped and automatically expiring.
+// The historical ROG eligibility timestamp remains unmodified in PostgreSQL.
+const RECOVERY_SESSION = '0xf1180931944c730c7b80b2e6b51aa8371bd0698f8e0035cdc5aba1169413a898';
+const RECOVERY_WALLET = '0x0dcbf14ea10242440085619a024cb1ac1f920a4e';
+const RECOVERY_DONATION = '1178';
+const RECOVERY_HUMAN = 21970;
+const RECOVERY_HUMAN_AT = Date.parse('2026-11-08T11:12:03.345Z');
+const RECOVERY_ORIGINAL_EXPIRY = Date.parse('2026-11-08T12:12:03.345Z');
+
+function incidentRecoveryUntil(row, now = Date.now()) {
+  const raw = String(process.env.PHARAOH_1178_RECOVERY_UNTIL || '').trim();
+  // An explicit UTC ISO-8601 deadline must be configured; default is disabled.
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(raw)) return null;
+  const until = Date.parse(raw);
+  if (!Number.isFinite(until) || until <= now || until > now + 24 * 60 * 60 * 1000) return null;
+  if (!row || String(row.session_ref || '').toLowerCase() !== RECOVERY_SESSION ||
+      String(row.wallet || '').toLowerCase() !== RECOVERY_WALLET ||
+      String(row.rog_donation_id || '') !== RECOVERY_DONATION ||
+      Number(row.rog_human_position) !== RECOVERY_HUMAN ||
+      row.rog_eligibility_source !== PROTOCOL ||
+      row.rog_fulfillment_status !== 'COMPLETED' ||
+      !hasCompletedFreshRog(row) ||
+      row.status !== 'ROG_PAYMENT_CONFIRMED' || row.completed_at ||
+      row.pharaoh_tx_hash || row.pharaoh_candidate_tx_hash ||
+      (row.pharaoh_broadcast_intent_at && !row.pharaoh_broadcast_cancelled_at) ||
+      (row.rog_claimed_at && (asMs(row.rog_claim_expires_at) == null ||
+       asMs(row.rog_claim_expires_at) <= now || asMs(row.rog_claim_expires_at) > until))) return null;
+  if (asMs(row.rog_eligibility_completed_at) !== RECOVERY_HUMAN_AT ||
+      asMs(row.rog_eligibility_expires_at) !== RECOVERY_ORIGINAL_EXPIRY ||
+      now < RECOVERY_ORIGINAL_EXPIRY) return null;
+  return until;
+}
+
+function effectiveExpiry(row, now = Date.now()) {
+  const completed = asMs(row.rog_eligibility_completed_at || row.rog_confirmed_at);
+  const historical = asMs(row.rog_eligibility_expires_at) ||
+    (completed == null ? null : completed + WINDOW_MS);
+  return incidentRecoveryUntil(row, now) || historical;
+}
+
 function stateFromRow(row, now = Date.now()) {
   if (!row) return null;
   const human = Number(row.rog_human_position);
   const completed = asMs(row.rog_eligibility_completed_at || row.rog_confirmed_at);
-  const expires = asMs(row.rog_eligibility_expires_at) || (completed == null ? null : completed + WINDOW_MS);
+  const expires = effectiveExpiry(row, now);
   const claimExpires = asMs(row.rog_claim_expires_at);
 
   let status = 'ROG_REQUIRED';
@@ -60,6 +100,8 @@ function stateFromRow(row, now = Date.now()) {
     completedAt: completed == null ? null : new Date(completed).toISOString(),
     expiresAt: expires == null ? null : new Date(expires).toISOString(),
     secondsRemaining: expires == null ? 0 : Math.max(0, Math.floor((expires - now) / 1000)),
+    incidentRecovery: !!incidentRecoveryUntil(row, now),
+    historicalRogExpiresAt: row.rog_eligibility_expires_at || null,
     claimed: status === 'CLAIMED'
   };
 }
@@ -150,7 +192,7 @@ async function authorize(wallet, sessionRef, dependencies = {}) {
     }
     if (!hasCompletedFreshRog(row)) throw makeError('La nuova HUMAN ROG dedicata a questo ciclo non e ancora completata', 'DIRECT_ROG_POSITION_REQUIRED', true);
 
-    const expiresAt = asMs(row.rog_eligibility_expires_at) || ((asMs(row.rog_eligibility_completed_at || row.rog_confirmed_at) || 0) + WINDOW_MS);
+    const expiresAt = effectiveExpiry(row);
     if (!expiresAt || Date.now() >= expiresAt) throw makeError('La finestra ROG di 60 minuti e scaduta: serve una nuova donazione ROG', 'ROG_PROOF_EXPIRED');
 
     const proof = sessionManager.asJsonObject ? sessionManager.asJsonObject(row.rog_proof) : (typeof row.rog_proof === 'object' ? row.rog_proof : {});
@@ -273,7 +315,7 @@ async function markBroadcastIntent(wallet, sessionRef, dependencies = {}) {
       throw makeError('La nuova HUMAN ROG dedicata a questo ciclo non e ancora completata', 'DIRECT_ROG_POSITION_REQUIRED', true);
     }
     const now = Date.now();
-    const eligibilityExpiry = asMs(row.rog_eligibility_expires_at) || ((asMs(row.rog_eligibility_completed_at || row.rog_confirmed_at) || 0) + WINDOW_MS);
+    const eligibilityExpiry = effectiveExpiry(row);
     if (!eligibilityExpiry || now >= eligibilityExpiry) throw makeError('La finestra ROG di 60 minuti e scaduta: serve una nuova donazione ROG', 'ROG_PROOF_EXPIRED');
     const claimExpiry = asMs(row.rog_claim_expires_at);
     if (!row.rog_claimed_at || claimExpiry == null || now >= claimExpiry) {
@@ -324,7 +366,7 @@ async function attachCandidate(wallet, sessionRef, txHash, source = 'BROWSER', r
         throw makeError('Intento di broadcast PHARAOH non registrato sul server', 'DIRECT_BROADCAST_INTENT_REQUIRED');
       }
       const now = Date.now();
-      const eligibilityExpiry = asMs(row.rog_eligibility_expires_at) || ((asMs(row.rog_eligibility_completed_at || row.rog_confirmed_at) || 0) + WINDOW_MS);
+      const eligibilityExpiry = effectiveExpiry(row);
       const claimExpiry = asMs(row.rog_claim_expires_at);
       if (!eligibilityExpiry || now >= eligibilityExpiry) throw makeError('La finestra ROG di 60 minuti e scaduta: serve una riconciliazione verificata', 'ROG_PROOF_EXPIRED');
       if (!row.rog_claimed_at || claimExpiry == null || now >= claimExpiry) {
@@ -388,7 +430,7 @@ async function assertClaimReady(wallet, sessionRef, dependencies = {}) {
     throw makeError('La nuova HUMAN ROG dedicata a questo ciclo non e ancora completata', 'DIRECT_ROG_POSITION_REQUIRED', true);
   }
 
-  const eligibilityExpiry = asMs(row.rog_eligibility_expires_at) || ((asMs(row.rog_eligibility_completed_at || row.rog_confirmed_at) || 0) + WINDOW_MS);
+  const eligibilityExpiry = effectiveExpiry(row);
   if (!eligibilityExpiry || Date.now() >= eligibilityExpiry) {
     throw makeError('La finestra ROG di 60 minuti e scaduta: serve una nuova donazione ROG', 'ROG_PROOF_EXPIRED');
   }
@@ -420,5 +462,7 @@ module.exports = {
   hasPharaohRecoveryEvidence,
   WINDOW_MS,
   CLAIM_MS,
-  PROTOCOL
+  PROTOCOL,
+  incidentRecoveryUntil,
+  effectiveExpiry
 };

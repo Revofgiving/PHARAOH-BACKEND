@@ -90,7 +90,8 @@ async function startSession(wallet, dependencies = {}) {
 
       if (existing && !sessionManager.hasPharaohReconciliationEvidence(existing) && existing.rog_eligibility_expires_at) {
         const expiresMs = new Date(existing.rog_eligibility_expires_at).getTime();
-        if (Number.isFinite(expiresMs) && Date.now() >= expiresMs) {
+        if (Number.isFinite(expiresMs) && Date.now() >= expiresMs &&
+            !eligibility.incidentRecoveryUntil(existing)) {
           await client.query(
             `UPDATE direct_donation_sessions
                 SET status='CANCELLED', rog_claimed_at=NULL, rog_claim_expires_at=NULL,
