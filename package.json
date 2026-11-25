@@ -48,7 +48,8 @@
     "test:economics:multiturn-model": "node scripts/test-funded-multiturn-model.js",
     "inspect:cutover:assess": "node ops/economic-cutover-assessment.js",
     "test:isolated:host": "sh ops/run-isolated-qa.sh",
-    "test:direct-1to1": "node scripts/test-direct-1to1-golden-e2e.js"
+    "test:direct-1to1": "node scripts/test-direct-1to1-golden-e2e.js",
+    "test:fase9:admin:http:mock": "node scripts/test-fase9-admin-http-mock.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

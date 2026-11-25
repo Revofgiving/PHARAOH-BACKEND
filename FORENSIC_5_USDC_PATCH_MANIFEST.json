@@ -1,0 +1,14 @@
+{
+  "base_zip": "PHARAOH-BACKEND-pharaoh-backend-22-ottobre-2026.zip",
+  "base_sha256": "8cfc380caf1f2c4561e8ce42d212a3cdf6ee358aa200f5526532de29b58f03f7",
+  "changed_files": {
+    "s0-confirmed-economics.js": "8848c75a4f581e12ced3b4dc96c1ca59f92288bb56e1d44f741173c2963f3505",
+    "economic-flow.js": "0ae1b53512ea0cc4f2788509362fd0dde74a6f9b0a90a8764b2ab792bec2c838",
+    "donation-flow-manager.js": "c7236d5184deb87179dee3107cfd34ce56c8aba2cf509218f2f514a4f1804738",
+    "scripts/test-confirmed-economics.js": "e6a3d679b2a565b9bd8666588b40a2a5c3908908d5df3235bf5db3e1ee273d4a",
+    "scripts/test-economic-progression-runtime.js": "1acca8a4421c8400715b2c4099b091ef759c57d40e2881b4d926dfb54cd805ba",
+    "scripts/test-funded-multiturn-model.js": "724e00a33ee47b5978c1a7ec85896db7a4140af8f0f579f65bf3926b3ab37733",
+    "scripts/test-rha-gas-reserve-policy.js": "8668d98420d74244196a496e4c065a75b3901fe904a9de735bbd1cee76129323"
+  },
+  "status": "NON_DEPLOY - partial implementation - admin UI and swap registration not implemented"
+}

@@ -23,7 +23,7 @@ async function main(){let cases=0;
  const before=structuredClone(h.data);await run(h,f=>f.prepareEntryCompletion(first));assert.deepEqual(h.data,before);cases++;
  seed(h,'B1_TURN:1',T,'B1_TURN','9000');const turn={id:1,numero_turno:1,sacerdoti_entrati:18,sacerdoti_necessari:18};
  const rha=await run(h,f=>f.planExit({level:'RHA',eventKey:'RHA:1',turn,account:a}));
- assert.equal(rha.netAtomic,6000000000n);assert.equal(rha.beneficiaryWallet,F);assert.equal(h.data.buckets.get('B1_TURN:1').balance_atomic,'0');assert.equal(h.data.movements.get('GEMELLI_NEXT:1').depends_on,'GEMELLI_RETURN:1');cases++;
+ assert.equal(rha.netAtomic,5995000000n);assert.equal(rha.gasReserveAtomic,A.usdc('5'));assert.equal(h.data.buckets.get(rha.keys.GAS_RESERVE).balance_atomic,A.usdc('5').toString());assert.equal(rha.beneficiaryWallet,F);assert.equal(h.data.buckets.get('B1_TURN:1').balance_atomic,'0');assert.equal(h.data.movements.get('GEMELLI_NEXT:1').depends_on,'GEMELLI_RETURN:1');cases++;
  await assert.rejects(run(h,f=>f.fundFunctions({turnId:2,turnNumber:2})),/FUNDING_MISSING/);cases++;
  await settle(h,'GEMELLI_RETURN:1',3);await settle(h,'GEMELLI_NEXT:1',4);await run(h,f=>f.fundFunctions({turnId:2,turnNumber:2}));assert.equal(h.data.buckets.get('B1_TURN:2').balance_atomic,A.usdc('2500').toString());assert.equal(h.data.buckets.get('GEMELLI:RESERVE:2').balance_atomic,A.usdc('500').toString());cases++;
  for(let i=1;i<=13;i++){seed(h,`PRIEST:${i+1}`,T,'PRIEST','500');h.data.buckets.get(`PRIEST:${i+1}`).metadata={heirAccountId:String(100+i)};await run(h,f=>f.fundPriest({accountId:100+i,turnId:2,fundingBucket:`PRIEST:${i+1}`}));}

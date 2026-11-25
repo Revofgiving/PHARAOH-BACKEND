@@ -192,6 +192,30 @@
       "description": "DIRECT V5: apre/recupera la sessione PHARAOH prima del controllo Community; SESSION_OPEN non autorizza fondi e viene promosso solo dopo verifica Community al gate ROG",
       "file": "database/0030_direct_session_before_community.sql",
       "sha256": "5a6864758175cf99d4e7e38705e978722bff9d1ecbca270292ea286572c3dd6a"
+    },
+    {
+      "id": "0031_rha_gas_reserve_registry",
+      "description": "Registro persistente append-only dei 5 USDC RHA per payout confermato, senza backfill storico",
+      "file": "database/0031_rha_gas_reserve_registry.sql",
+      "sha256": "30796df1c178e48e6408d77a0ec4bf916dece7c36983477dafe4ebdb54290795"
+    },
+    {
+      "id": "0032_manual_usdc_pol_conversion_registry",
+      "description": "Registro conversioni manuali USDC/POL con vincoli contabili, prova on-chain e audit append-only; nessun backfill",
+      "file": "database/0032_manual_usdc_pol_conversion_registry.sql",
+      "sha256": "f50d089eec01fa12b70487955405c26c60584c9c6e46c6ebc8fe70a6596b5d86"
+    },
+    {
+      "id": "0033_manual_conversion_cancellation_hold",
+      "description": "Annullamento richiesto senza rilascio automatico di USDC; vincolo permanente fino a riconciliazione indipendente",
+      "file": "database/0033_manual_conversion_cancellation_hold.sql",
+      "sha256": "00a812deec9ff8c3dfdc09867d7847e3670d7afc4977867f0cd18d9d08a54267"
+    },
+    {
+      "id": "0034_conversion_dual_control_attestations",
+      "description": "Attestazioni individuali Ed25519 append-only per doppia approvazione, senza rilascio fondi",
+      "file": "database/0034_conversion_dual_control_attestations.sql",
+      "sha256": "37591341f07f9ee5e512c568612832fc058131f84de141768dcaa598c85d4da0"
     }
   ]
 }

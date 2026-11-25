@@ -1,0 +1,414 @@
+{
+  "version": 1,
+  "node": "v22.16.0",
+  "total": 57,
+  "counts": {
+    "PASS": 53,
+    "FAIL": 0,
+    "BLOCKED_DEPENDENCY": 4,
+    "TIMEOUT": 0
+  },
+  "allPassed": false,
+  "scope": "Local source/unit/mock tests; not live PostgreSQL, ERC20 settlement or deployment",
+  "results": [
+    {
+      "name": "test-autonomous-reentry-roots.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 81,
+      "signal": null
+    },
+    {
+      "name": "test-blockchain-cross-dynamic.js",
+      "status": "BLOCKED_DEPENDENCY",
+      "exitCode": 1,
+      "durationMs": 41,
+      "signal": null
+    },
+    {
+      "name": "test-confirmed-economics.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 32,
+      "signal": null
+    },
+    {
+      "name": "test-continuity-runtime.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 38,
+      "signal": null
+    },
+    {
+      "name": "test-cross-forensic.js",
+      "status": "BLOCKED_DEPENDENCY",
+      "exitCode": 1,
+      "durationMs": 29,
+      "signal": null
+    },
+    {
+      "name": "test-cross-notify-boundary.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 37,
+      "signal": null
+    },
+    {
+      "name": "test-cross-runtime-loopback.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 174,
+      "signal": null
+    },
+    {
+      "name": "test-cutover-assessment.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 46,
+      "signal": null
+    },
+    {
+      "name": "test-cutover-inventory-readonly.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 32,
+      "signal": null
+    },
+    {
+      "name": "test-dependency-preflight.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 31,
+      "signal": null
+    },
+    {
+      "name": "test-direct-1to1-golden-e2e.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 73,
+      "signal": null
+    },
+    {
+      "name": "test-direct-gift-dynamic.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 32,
+      "signal": null
+    },
+    {
+      "name": "test-direct-gift-static.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 26,
+      "signal": null
+    },
+    {
+      "name": "test-direct-rog-external-gate.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 30,
+      "signal": null
+    },
+    {
+      "name": "test-direct-session-before-community.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 26,
+      "signal": null
+    },
+    {
+      "name": "test-donation-kill-switch-static.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 34,
+      "signal": null
+    },
+    {
+      "name": "test-economic-ledger-runtime.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 35,
+      "signal": null
+    },
+    {
+      "name": "test-economic-progression-runtime.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 61,
+      "signal": null
+    },
+    {
+      "name": "test-economic-schema-review.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 33,
+      "signal": null
+    },
+    {
+      "name": "test-economic-worker-runtime.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 29,
+      "signal": null
+    },
+    {
+      "name": "test-entry-global-position-static.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 26,
+      "signal": null
+    },
+    {
+      "name": "test-entry-rollover-100.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 59,
+      "signal": null
+    },
+    {
+      "name": "test-external-origin-runtime.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 47,
+      "signal": null
+    },
+    {
+      "name": "test-function-reservations-65-human.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 30,
+      "signal": null
+    },
+    {
+      "name": "test-funded-multiturn-model.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 4409,
+      "signal": null
+    },
+    {
+      "name": "test-gas-conversion-registry.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 38,
+      "signal": null
+    },
+    {
+      "name": "test-gas-reserve-registry.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 30,
+      "signal": null
+    },
+    {
+      "name": "test-gift-smartbox-3months.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 27,
+      "signal": null
+    },
+    {
+      "name": "test-iside-reentry-receiver-gift.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 36,
+      "signal": null
+    },
+    {
+      "name": "test-isolated-qa-source-copy.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 33,
+      "signal": null
+    },
+    {
+      "name": "test-migration-atomic-envelope.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 62,
+      "signal": null
+    },
+    {
+      "name": "test-migration-compat.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 52,
+      "signal": null
+    },
+    {
+      "name": "test-no-credit-no-dono-al-volo.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 29,
+      "signal": null
+    },
+    {
+      "name": "test-pharaoh-registry-v4.js",
+      "status": "BLOCKED_DEPENDENCY",
+      "exitCode": 1,
+      "durationMs": 24,
+      "signal": null
+    },
+    {
+      "name": "test-postgres-concurrency-guard.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 33,
+      "signal": null
+    },
+    {
+      "name": "test-postgres-rehearsal-guard.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 29,
+      "signal": null
+    },
+    {
+      "name": "test-prepaid-gift-economic-reserve.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 36,
+      "signal": null
+    },
+    {
+      "name": "test-projects-v4-flow.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 29,
+      "signal": null
+    },
+    {
+      "name": "test-public-runtime-inspection.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 28,
+      "signal": null
+    },
+    {
+      "name": "test-registry-recovery-hardening.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 27,
+      "signal": null
+    },
+    {
+      "name": "test-rha-dual-allocation-dynamic.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 39,
+      "signal": null
+    },
+    {
+      "name": "test-rha-dual-allocation-static.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 27,
+      "signal": null
+    },
+    {
+      "name": "test-rha-gas-reserve-policy.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 45,
+      "signal": null
+    },
+    {
+      "name": "test-rog-rha-registration.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 30,
+      "signal": null
+    },
+    {
+      "name": "test-s0-generated-batch.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 29,
+      "signal": null
+    },
+    {
+      "name": "test-s0-materializer-runtime.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 68,
+      "signal": null
+    },
+    {
+      "name": "test-s0-system-policy.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 26,
+      "signal": null
+    },
+    {
+      "name": "test-secondary-shared-wallet-identity.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 27,
+      "signal": null
+    },
+    {
+      "name": "test-subwallet-registry-adapter.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 30,
+      "signal": null
+    },
+    {
+      "name": "test-subwallet-registry-wiring.js",
+      "status": "BLOCKED_DEPENDENCY",
+      "exitCode": 1,
+      "durationMs": 24,
+      "signal": null
+    },
+    {
+      "name": "test-thot-humanitarian-reentry.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 33,
+      "signal": null
+    },
+    {
+      "name": "test-treasury-chain-proof-boundary.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 29,
+      "signal": null
+    },
+    {
+      "name": "test-treasury-dispatcher-runtime.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 39,
+      "signal": null
+    },
+    {
+      "name": "test-v4-audit-v2.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 38,
+      "signal": null
+    },
+    {
+      "name": "test-v4-data-preservation.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 27,
+      "signal": null
+    },
+    {
+      "name": "test-v4-release-and-source.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 47,
+      "signal": null
+    },
+    {
+      "name": "test-wallet-person-paths-static.js",
+      "status": "PASS",
+      "exitCode": 0,
+      "durationMs": 26,
+      "signal": null
+    }
+  ]
+}

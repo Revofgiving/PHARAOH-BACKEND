@@ -10,7 +10,7 @@ const { planExitNet, normalizeHumanOrigin } = require('./s0-confirmed-economics'
 const { UNIT_ATOMIC } = require('./s0-generated-batch-policy');
 function exitKeys(eventKey) {
   const prefix = `EXIT:${A.digest(A.key(eventKey))}`;
-  return Object.fromEntries(['NET','GENERATED','PROJECTS','ROG','URANUS','NEXT_GEMELLI'].map(k => [k,`${prefix}:${k}`]));
+  return Object.fromEntries(['NET','GAS_RESERVE','GENERATED','PROJECTS','ROG','URANUS','NEXT_GEMELLI'].map(k => [k,`${prefix}:${k}`]));
 }
 function progressionBucket(accountId, level) { return `PROGRESSION:${A.positive(accountId)}:L${level}`; }
 function turnBucket(turnId, level) { return level === 'RHA' ? `B1_TURN:${A.positive(turnId)}` : `L${level === 'THOT' ? 4 : 5}_TURN:${A.positive(turnId)}`; }
@@ -118,6 +118,7 @@ class EconomicFlow {
       ownerWallet:economics.owner_wallet,fundAWallet:this.config.fundAWallet});
     const keys=exitKeys(eventKey), outputs=[];
     outputs.push(this.bucket(keys.NET,positionClass==='PILETTA'?'GENERATED_S0':'PAYOUT',net.netAtomic));
+    if (net.gasReserveAtomic > 0n) outputs.push(this.bucket(keys.GAS_RESERVE,'GAS_RESERVE_PENDING',net.gasReserveAtomic));
     let total;
     if(level==='RHA') {
       total=A.usdc('9000');
@@ -137,7 +138,7 @@ class EconomicFlow {
     if(level==='RHA')await this.prepareGemelliCycle({eventKey,turnNumber:turn.numero_turno,accountType:account.tipo});
     if(level==='THOT')await this.ledger.prepareMovement({key:keys.PROJECTS,reserveBucket:keys.PROJECTS,to:this.config.projectsWallet,amountAtomic:A.usdc('500'),purpose:'THOT_PROJECTS_OUT',
       destinationBucket:`PROJECTS:THOT:${A.digest(eventKey)}`,destinationPurpose:'PROJECTS_HUMANITARIAN'});
-    return {level,eventKey,positionClass,accountId:account.id,keys,netAtomic:net.netAtomic,cashPayoutAtomic:net.cashPayoutAtomic,beneficiaryWallet:net.beneficiaryWallet};
+    return {level,eventKey,positionClass,accountId:account.id,keys,grossAtomic:net.grossAtomic,gasReserveAtomic:net.gasReserveAtomic,netAtomic:net.netAtomic,cashPayoutAtomic:net.cashPayoutAtomic,beneficiaryWallet:net.beneficiaryWallet};
   }
   async prepareGemelliCycle({eventKey,turnNumber,accountType}) {
     const next=Number(turnNumber)+1,keys=exitKeys(eventKey),gemelli=A.address(this.config.gemelliWallet);

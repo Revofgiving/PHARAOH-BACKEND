@@ -7,8 +7,8 @@ const ROOT = path.resolve(__dirname, '..');
 const RELEASE_STATE_PATH = path.join(ROOT, 'release-state.json');
 const EXPECTED_CONTRACT_ID = 'PHARAOH_TREASURY_REGISTRY_V4';
 const EXPECTED_REGISTRY_ABI_VERSION = '4.0.0';
-const EXPECTED_MIGRATION_COUNT = 30;
-const EXPECTED_TEST_TOTAL = 53;
+const EXPECTED_MIGRATION_COUNT = 34;
+const EXPECTED_TEST_TOTAL = 60;
 const RELEASE_GATE_POLICY_VERSION = 1;
 
 function loadReleaseState() {
@@ -36,7 +36,7 @@ function evaluateReleaseState(state) {
   if (state?.migrationAllowed !== true) blockers.push('MIGRATIONS_NOT_ALLOWED_FOR_RELEASE');
   if (state?.registryContractId !== EXPECTED_CONTRACT_ID) blockers.push('REGISTRY_CONTRACT_ID_NOT_V4');
   if (state?.registryAbiVersion !== EXPECTED_REGISTRY_ABI_VERSION) blockers.push('REGISTRY_ABI_VERSION_NOT_4_0_0');
-  if (Number(state?.migrationCount) !== EXPECTED_MIGRATION_COUNT) blockers.push('MIGRATION_COUNT_NOT_30');
+  if (Number(state?.migrationCount) !== EXPECTED_MIGRATION_COUNT) blockers.push('MIGRATION_COUNT_NOT_34');
   if (state?.original25MigrationsUnchanged !== true) blockers.push('ORIGINAL_25_MIGRATIONS_NOT_PRESERVED');
   if (state?.current28SqlMigrationsUnchanged !== true) blockers.push('CURRENT_28_SQL_MIGRATIONS_NOT_CERTIFIED');
   if (state?.current30SqlMigrationsCertified !== true) blockers.push('CURRENT_30_SQL_MIGRATIONS_NOT_CERTIFIED');
@@ -44,8 +44,8 @@ function evaluateReleaseState(state) {
   if (state?.releaseGate?.status !== 'ALLOW') blockers.push('RELEASE_GATE_STATUS_NOT_ALLOW');
 
   const summary = state?.testSummary || {};
-  if (Number(state?.testTotal) !== EXPECTED_TEST_TOTAL) blockers.push('TEST_TOTAL_NOT_53');
-  if (Number(summary.PASS) !== EXPECTED_TEST_TOTAL) blockers.push('TEST_PASS_NOT_53');
+  if (Number(state?.testTotal) !== EXPECTED_TEST_TOTAL) blockers.push('TEST_TOTAL_NOT_60');
+  if (Number(summary.PASS) !== EXPECTED_TEST_TOTAL) blockers.push('TEST_PASS_NOT_60');
   if (Number(summary.FAIL) !== 0) blockers.push('TEST_FAILURES_PRESENT');
   if (Number(summary.BLOCKED_DEPENDENCY) !== 0) blockers.push('TEST_DEPENDENCIES_BLOCKED');
   if (Number(summary.TIMEOUT) !== 0) blockers.push('TEST_TIMEOUTS_PRESENT');

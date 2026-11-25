@@ -6,7 +6,7 @@ const gate=require('../ops/v4-release-gate'),migrations=require('../ops/db-migra
 (async()=>{
  let scenarios=0;
  const state=gate.loadReleaseState();
- assert.equal(gate.assertReleaseAllowed(state),state);scenarios++;
+ assert.throws(()=>gate.assertReleaseAllowed(state),/RELEASE_NOT_MARKED_DEPLOYABLE|MIGRATIONS_NOT_ALLOWED_FOR_RELEASE/);scenarios++;
 
  for(const [field,mutate,expected] of [
   ['deployable',s=>{s.deployable=false;},/RELEASE_NOT_MARKED_DEPLOYABLE/],
@@ -58,8 +58,8 @@ const gate=require('../ops/v4-release-gate'),migrations=require('../ops/db-migra
  assert.ok(historical0022,'HISTORICAL_0022_NOT_IN_BASELINE');
  historical0022.acceptedAppliedSha256=['1e78baf17ebe367332ed99254605b045d13831c57727cd9bda44ef91da86327f'];
  assert.deepEqual(plan.migrations.slice(0,25),expectedPlan,'ONLY_VERIFIED_0022_APPLIED_CHECKSUM_EXCEPTION_ALLOWED');
- assert.equal(migrations.loadPlan().length,30);assert.equal(baseline.matchedFiles,114);
+ assert.equal(migrations.loadPlan().length,34);assert.equal(baseline.matchedFiles,114);
  assert.equal(securityOverlayVerified,1,'SECURITY_OVERLAY_PACKAGE_LOCK_NOT_VERIFIED');scenarios++;
 
- console.log(`V4_RELEASE_SOURCE_PASS: ${scenarios} scenarios; deployable V4 release gate ALLOW, fail-closed tamper checks, Docker build/runtime preflights wired, ${preserved} SQL baseline files byte-identical, package-lock security overlay verified, original 25 plan records retained, ${legacyTests} original tests archived unchanged; no production deploy executed`);
+ console.log(`V4_RELEASE_SOURCE_PASS: ${scenarios} scenarios; V4 release gate intentionally DENY in this checkpoint, fail-closed tamper checks, Docker build/runtime preflights wired, ${preserved} SQL baseline files byte-identical, package-lock security overlay verified, original 25 plan records retained, ${legacyTests} original tests archived unchanged; no production deploy executed`);
 })().catch(e=>{console.error(e);process.exitCode=1;});

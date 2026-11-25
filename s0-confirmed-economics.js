@@ -56,7 +56,11 @@ function netUsdc(accountType, level) {
 /** Separate receiver net from system quotas; never pay the whole table to A. */
 function planExitNet({positionClass, accountType, level, ownerWallet, fundAWallet}) {
   if (!['HUMAN','FONDO_A','PILETTA'].includes(positionClass)) throw new Error('INVALID_RECEIVER_CLASS');
-  const netAtomic = netUsdc(accountType, level) * SCALE;
+  const grossAtomic = netUsdc(accountType, level) * SCALE;
+  // One 5-USDC contribution for each actual primary RHA payment, never per wallet.
+  // System PILETTA reinvestments and all other exits are explicitly excluded.
+  const gasReserveAtomic = level === 'RHA' && (accountType === 'PRIMARIO' || accountType === 'FONDO') && positionClass !== 'PILETTA' ? 5n * SCALE : 0n;
+  const netAtomic = grossAtomic - gasReserveAtomic;
   const lots = [];
   if (level === 'THOT') lots.push(Object.freeze({source:'THOT', amountAtomic:500n*SCALE, count:5n}));
   if (level === 'ISIDE') lots.push(Object.freeze({source:'ISIDE', amountAtomic:5000n*SCALE, count:50n}));
@@ -70,7 +74,7 @@ function planExitNet({positionClass, accountType, level, ownerWallet, fundAWalle
     }
   }
   return Object.freeze({status:'PLAN_ONLY_NOT_EXECUTED', level, accountType, positionClass,
-    netAtomic, cashPayoutAtomic:positionClass === 'PILETTA' ? 0n : netAtomic,
+    grossAtomic, gasReserveAtomic, netAtomic, cashPayoutAtomic:positionClass === 'PILETTA' ? 0n : netAtomic,
     beneficiaryWallet, automaticReceiverReentries:0n,
     generatedLots:Object.freeze(lots), existingReservesAndCrossUnchanged:true});
 }

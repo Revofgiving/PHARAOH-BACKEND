@@ -13,7 +13,7 @@ async function run(env=process.env){
  const {Pool}=require('pg'),pool=new Pool({connectionString,max:4,connectionTimeoutMillis:5000});
  const schema='pharaoh_qa_'+crypto.randomBytes(12).toString('hex'),quoted=safeSchema(schema),token=crypto.randomBytes(32).toString('hex');
  const T='0x'+'1'.repeat(40),U='0x'+'2'.repeat(40),TOKEN='0x'+'3'.repeat(40),H='0x'+'4'.repeat(64);
- const config={token:TOKEN,chainId:'137',minConfirmations:2};const plan=loadPlan();assert.equal(plan.length,30, 'QA requires the certified 30-migration plan');let admin,created=false,tests=0,cleanupConfirmed=false,stage='CONNECT',serverVersion;
+ const config={token:TOKEN,chainId:'137',minConfirmations:2};const plan=loadPlan();assert.equal(plan.length,34, 'QA requires the candidate 34-migration plan');let admin,created=false,tests=0,cleanupConfirmed=false,stage='CONNECT',serverVersion;
  const connect=async()=>{const c=await pool.connect();try{await c.query(`SET search_path=${quoted},pg_catalog; SET statement_timeout='15s'; SET lock_timeout='5s'; SET TIME ZONE 'UTC'`);return c;}catch(e){c.release();throw e;}};
  const tx=async fn=>{const c=await connect();try{await c.query('BEGIN');const store=new PgEconomicStore(c),ledger=new EconomicLedger(store,config);const out=await fn({c,store,ledger});await c.query('COMMIT');return out;}catch(e){try{await c.query('ROLLBACK');}catch(_){}throw e;}finally{c.release();}};
  try{

@@ -59,6 +59,7 @@ async function reconcileAccepted(limit=20) {
         await client.query('BEGIN');await configuredLedger(client).ready();
         updated=(await client.query(`UPDATE doni_pendenti SET status='SENT',tx_hash=$2,sent_at=COALESCE(sent_at,now()),errore=NULL
           WHERE id=$1 AND status IN ('PROCESSING','FAILED') AND accepted_at IS NOT NULL AND (tx_hash IS NULL OR LOWER(tx_hash)=$2) RETURNING *`,[row.id,settled.txHash])).rows[0];
+        if(updated)await require('./gas-reserve-manager').syncPayout(client,updated);
         if(updated)await client.query("INSERT INTO audit_doni_pendenti(dono_pendente_id,evento,dettagli) VALUES($1,'SENT_RECONCILED',$2::jsonb)",[row.id,A.json({txHash:settled.txHash})]);
         await client.query('COMMIT');
       }catch(error){try{await client.query('ROLLBACK');}catch(_){}throw error;}finally{client.release();}
@@ -86,6 +87,7 @@ async function expireUnsent({limit=200}) {
       const destination=`TREASURY:EXPIRED_PAYOUT:${row.id}`;
       await ledger.reallocate({eventKey:`EXPIRE_PAYOUT:${row.id}`,inputs:[{key:reserve,amountAtomic:A.usdc(String(row.importo))}],outputs:[{key:destination,wallet:process.env.PHARAOH_TREASURY_WALLET,purpose:'TREASURY_EXPIRED_OWN_FUNDS',amountAtomic:A.usdc(String(row.importo))}],context:{pendingGiftId:String(row.id)}});
       await client.query("UPDATE doni_pendenti SET status='EXPIRED',expired_at=now(),dettagli=dettagli||$2::jsonb WHERE id=$1",[row.id,A.json({destinazione:'CASSA_PHARAOH',economicBucket:destination})]);
+      await require('./gas-reserve-manager').syncPayout(client,{...row,status:'EXPIRED'});
       await client.query("INSERT INTO audit_doni_pendenti(dono_pendente_id,evento,dettagli) VALUES($1,'EXPIRED',$2::jsonb)",[row.id,A.json({economicBucket:destination})]);
     }
     await client.query('COMMIT');return {expired:rows.length,destinazione:{destinazione:'CASSA_PHARAOH',wallet:process.env.PHARAOH_TREASURY_WALLET}};

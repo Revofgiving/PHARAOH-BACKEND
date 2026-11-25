@@ -12,6 +12,7 @@ function validateTarget(env=process.env) {
  if(!env.PHARAOH_TEST_DATABASE_URL)throw A.error('PG_REHEARSAL_TEST_DATABASE_REQUIRED');
  let u;try{u=new URL(env.PHARAOH_TEST_DATABASE_URL);}catch(_){throw A.error('PG_REHEARSAL_URL_INVALID');}
  if(!['postgres:','postgresql:'].includes(u.protocol)||!u.hostname||!/^\/pharaoh_test_[a-z0-9_]{8,}$/.test(u.pathname)||u.search||u.hash)throw A.error('PG_REHEARSAL_DISPOSABLE_NAME_REQUIRED');
+ if(!['127.0.0.1','localhost','::1','[::1]'].includes(u.hostname))throw A.error('PG_REHEARSAL_LOOPBACK_ONLY');
  if(env.DATABASE_URL){let live;try{live=new URL(env.DATABASE_URL);}catch(_){}if(live&&live.hostname===u.hostname&&(live.port||'5432')===(u.port||'5432')&&live.pathname===u.pathname)throw A.error('PG_REHEARSAL_APPLICATION_DATABASE_FORBIDDEN');}
  return u.toString();
 }
@@ -24,7 +25,7 @@ async function run(env=process.env) {
   const userObjects=(await c.query("SELECT count(*)::text AS count FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND c.relkind IN ('r','p','v','m','f','S')")).rows[0].count;
   if(userObjects!=='0')throw A.error('PG_REHEARSAL_DATABASE_NOT_EMPTY');
   await c.query('BEGIN');begun=true;await c.query("SET LOCAL search_path=public; SET LOCAL statement_timeout='30s'; SET LOCAL lock_timeout='3s'; SET LOCAL TIME ZONE 'UTC'");
-  const plan=loadPlan();assert.equal(plan.length,30, 'QA requires the certified 30-migration plan');
+  const plan=loadPlan();assert.equal(plan.length,34, 'QA requires the candidate 34-migration plan');
   for(const step of plan.slice(0,25))await c.query(step.executionSql);
   checks++;
   const T='0x'+'1'.repeat(40),U='0x'+'2'.repeat(40),TOKEN='0x'+'3'.repeat(40),H='0x'+'4'.repeat(64);

@@ -1455,6 +1455,11 @@ async function gestisciUscitaFaraoneAtomica(turno, client) {
 
   const economicFlow = require('./economic-flow').configuredFlow(client);
   const economicExit = await economicFlow.planExit({level:'RHA',eventKey,turn:statoTurno,account});
+  const payoutNetUsdc = Number(require('./economic-amounts').decimal(economicExit.cashPayoutAtomic));
+  const gasReservedUsdc = Number(require('./economic-amounts').decimal(economicExit.gasReserveAtomic));
+  if (payoutNetUsdc + gasReservedUsdc !== uscita.netto && economicExit.positionClass !== 'PILETTA') {
+    throw new Error('RHA_GAS_RESERVE_GROSS_MISMATCH');
+  }
 
   const funzioni = await functionManager.rilasciaFunzioniL3({
     faraoneWallet,
@@ -1474,7 +1479,7 @@ async function gestisciUscitaFaraoneAtomica(turno, client) {
 
   try {
     const alerts = require('./alert-manager');
-    alerts.alertPayout(faraoneWallet, uscita.netto, statoTurno.numero_turno);
+    alerts.alertPayout(faraoneWallet, payoutNetUsdc, statoTurno.numero_turno);
   } catch (_) {}
 
   await db.registraAvanzamento({
@@ -1488,11 +1493,12 @@ async function gestisciUscitaFaraoneAtomica(turno, client) {
     aBlocco: uscita.passaAlL4 ? 2 : null,
     turno: statoTurno.numero_turno,
     doniRicevuti,
-    doniTrattenuti: (uscita.trattenutaCassa || 0) + (uscita.trattenutaIngressoL4 || 0),
-    netto: uscita.netto,
+    doniTrattenuti: (uscita.trattenutaCassa || 0) + (uscita.trattenutaIngressoL4 || 0) + gasReservedUsdc,
+    netto: payoutNetUsdc,
     evento: 'USCITA_L3',
     dettagli: {
       uscita,
+      commissioneGas: { lordoUsdc: uscita.netto, trattenutaUsdc: gasReservedUsdc, nettoUsdc: payoutNetUsdc, riservaBucket: gasReservedUsdc ? economicExit.keys.GAS_RESERVE : null },
       esitoPercorso: uscita.uscitaDefinitiva ? 'USCITA_DEFINITIVA' : 'PASSAGGIO_L4',
       funzioni: {
         simbionti: funzioni.simbionti.length,
@@ -1513,12 +1519,12 @@ async function gestisciUscitaFaraoneAtomica(turno, client) {
     wallet: economicExit.beneficiaryWallet,
     accountId: account.id,
     accountSigla: sigla,
-    importo: uscita.netto,
+    importo: payoutNetUsdc,
     livello: 3,
     tipoUscita: 'USCITA_L3',
     tipoAccount,
     turno: statoTurno.numero_turno,
-    dettagli: { uscita, economicReserveBucket: economicExit.keys.NET },
+    dettagli: { uscita, commissioneGas: { lordoUsdc: uscita.netto, trattenutaUsdc: gasReservedUsdc, nettoUsdc: payoutNetUsdc, riservaBucket: gasReservedUsdc ? economicExit.keys.GAS_RESERVE : null }, economicReserveBucket: economicExit.keys.NET },
     eventKey
   }, client);
   }

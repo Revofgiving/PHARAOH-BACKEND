@@ -8,7 +8,7 @@ const ROOT = path.resolve(__dirname, '..');
 const migrations = require('../ops/db-migrate');
 const plan = JSON.parse(fs.readFileSync(path.join(ROOT, 'database/migration-plan.json'), 'utf8'));
 
-assert.equal(plan.migrations.length, 30);
+assert.equal(plan.migrations.length, 34);
 for (const m of plan.migrations) {
   const data = fs.readFileSync(path.join(ROOT, m.file));
   const got = crypto.createHash('sha256').update(data).digest('hex');
@@ -63,7 +63,7 @@ assert.ok(m23 && !m23.acceptedAppliedSha256, '0023 deve essere una migration nuo
 assert.ok(m24 && !m24.acceptedAppliedSha256, '0024 deve essere una migration nuova e immutabile');
 assert.ok(m25 && !m25.acceptedAppliedSha256, '0025 deve essere una migration nuova e immutabile');
 
-for(const id of ['0026_economic_ledger_s0','0027_continuity_non_genealogical','0028_secondary_function_identity_scope','0029_direct_pharaoh_server_reconciliation','0030_direct_session_before_community']){const step=plan.migrations.find(m=>m.id===id);assert.ok(step && !step.acceptedAppliedSha256);}
+for(const id of ['0026_economic_ledger_s0','0027_continuity_non_genealogical','0028_secondary_function_identity_scope','0029_direct_pharaoh_server_reconciliation','0030_direct_session_before_community','0031_rha_gas_reserve_registry','0032_manual_usdc_pol_conversion_registry','0033_manual_conversion_cancellation_hold','0034_conversion_dual_control_attestations']){const step=plan.migrations.find(m=>m.id===id);assert.ok(step && !step.acceptedAppliedSha256);}
 const runner = fs.readFileSync(path.join(ROOT, 'ops/db-migrate.js'), 'utf8');
 assert.ok(runner.includes('acceptedAppliedSha256'), 'Migration runner deve riconoscere checksum legacy autorizzati');
 assert.ok(runner.includes('const accepted = new Set([planned.checksum'), 'Migration runner deve costruire allowlist esplicita');
@@ -74,7 +74,7 @@ const legacyApplied = [
 ];
 const comparison = migrations.comparePlan(migrations.loadPlan(), legacyApplied);
 assert.deepEqual(comparison.drift, [], 'Checksum 0002/0003 gia applicati devono essere accettati esplicitamente');
-assert.deepEqual(comparison.pending.map(x => x.id), ['0004_cross_movements', '0005_rha_dual_300_200', '0006_thot_humanitarian_reentry', '0007_iside_reentry_receiver_gift', '0008_remove_doni_credito', '0009_remove_dono_al_volo_staff_legacy', '0010_secondary_identity_wallets', '0011_entry_function_reservation_guard', '0012_entry_rollover_100', '0013_pharaoh_treasury_registry_v3', '0014_rog_rha_registration_evidence', '0015_direct_rog_async_gate', '0016_gift_pending_rog_beneficiary', '0017_gift_dynamic_rog_amount', '0018_gift_rog_exact_2', '0019_direct_rog_position_recovery', '0020_direct_rog_position_mandatory', '0021_numero_posizionale_unico', '0022_cassa_posizione_completa', '0023_direct_rog_wallet_eligibility_60m', '0024_gift_smartbox_activation', '0025_entry_global_progressive_with_function_reservations', '0026_economic_ledger_s0', '0027_continuity_non_genealogical', '0028_secondary_function_identity_scope', '0029_direct_pharaoh_server_reconciliation', '0030_direct_session_before_community']);
+assert.deepEqual(comparison.pending.map(x => x.id), ['0004_cross_movements', '0005_rha_dual_300_200', '0006_thot_humanitarian_reentry', '0007_iside_reentry_receiver_gift', '0008_remove_doni_credito', '0009_remove_dono_al_volo_staff_legacy', '0010_secondary_identity_wallets', '0011_entry_function_reservation_guard', '0012_entry_rollover_100', '0013_pharaoh_treasury_registry_v3', '0014_rog_rha_registration_evidence', '0015_direct_rog_async_gate', '0016_gift_pending_rog_beneficiary', '0017_gift_dynamic_rog_amount', '0018_gift_rog_exact_2', '0019_direct_rog_position_recovery', '0020_direct_rog_position_mandatory', '0021_numero_posizionale_unico', '0022_cassa_posizione_completa', '0023_direct_rog_wallet_eligibility_60m', '0024_gift_smartbox_activation', '0025_entry_global_progressive_with_function_reservations', '0026_economic_ledger_s0', '0027_continuity_non_genealogical', '0028_secondary_function_identity_scope', '0029_direct_pharaoh_server_reconciliation', '0030_direct_session_before_community','0031_rha_gas_reserve_registry','0032_manual_usdc_pol_conversion_registry','0033_manual_conversion_cancellation_hold','0034_conversion_dual_control_attestations']);
 const historical0022 = migrations.comparePlan(migrations.loadPlan(), [{ id: '0022_cassa_posizione_completa', checksum: '1e78baf17ebe367332ed99254605b045d13831c57727cd9bda44ef91da86327f' }]);
 assert.deepEqual(historical0022.drift, [], 'La sola impronta storica 0022 verificata deve essere riconosciuta');
 const invalid0022 = migrations.comparePlan(migrations.loadPlan(), [{ id: '0022_cassa_posizione_completa', checksum: '0'.repeat(64) }]);
@@ -82,4 +82,4 @@ assert.deepEqual(invalid0022.drift, ['0022_cassa_posizione_completa'], '0022 non
 const bad = migrations.comparePlan(migrations.loadPlan(), [{ id: '0002_direct_donation_sessions', checksum: '0'.repeat(64) }]);
 assert.deepEqual(bad.drift, ['0002_direct_donation_sessions']);
 
-console.log('PASS MIGRATIONS: 30 checksum correnti validi + 0029 riconciliazione PHARAOH DIRECT server-side + 0030 sessione prima della Community + compatibilita 0002/0003/0019 legacy');
+console.log('PASS MIGRATIONS: 34 checksum correnti validi + 0029 riconciliazione PHARAOH DIRECT server-side + 0030 sessione prima della Community + compatibilita 0002/0003/0019 legacy');

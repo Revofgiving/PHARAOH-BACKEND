@@ -42,6 +42,8 @@ function runStaticChecks() {
     'database/0028_secondary_function_identity_scope.sql',
     'database/0029_direct_pharaoh_server_reconciliation.sql',
     'database/0030_direct_session_before_community.sql',
+    'database/0031_rha_gas_reserve_registry.sql',
+    'gas-reserve-manager.js',
     'economic-ledger.js', 'economic-store.js', 'economic-flow.js',
     's0-materializer.js', 'treasury-transfer-manager.js', 'treasury-chain-adapter.js',
     'payout-economic-adapter.js', 'economic-worker.js', 'continuity-manager.js',
@@ -65,7 +67,7 @@ function runStaticChecks() {
 
   try {
     const plan = migrations.loadPlan();
-    check(plan.length === 30, 'PIANO_MIGRAZIONI_DEVE_AVERE_30_STEP', failures);
+    check(plan.length === 34, 'PIANO_MIGRAZIONI_DEVE_AVERE_34_STEP', failures);
     check(plan.some(m => m.id === '0026_economic_ledger_s0'), 'ECONOMIC_LEDGER_MIGRATION_MISSING', failures);
     check(plan.some(m => m.id === '0027_continuity_non_genealogical'), 'CONTINUITY_MIGRATION_MISSING', failures);
     check(plan.some(m => m.id === '0028_secondary_function_identity_scope'), 'SECONDARY_IDENTITY_SCOPE_MIGRATION_MISSING', failures);

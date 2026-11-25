@@ -1097,6 +1097,74 @@ function registerAdminRoutes({ app, pg, security }) {
     }
   });
 
+  // GAS COMMISSION RESERVE — backend-only admin APIs, no signing or swaps.
+  const gasConversions = require('./gas-conversion-manager');
+  const gasPool = require('./pg-connection-manager');
+  const gasAdminActor = (req) => 'ADMIN_KEY_AUTHENTICATED';
+  const conversionError = (res, err) => res.status(400).json({success:false,error:err.code || 'GAS_CONVERSION_FAILED'});
+  app.get('/api/admin/gas-reserve/balance', security.requireAdminKey, async (_req,res) => {
+    try { res.json({success:true,balances:await gasConversions.balances(gasPool)}); }
+    catch(err){conversionError(res,err);}
+  });
+  app.post('/api/admin/gas-reserve/conversions/prepare', security.requireAdminKey, async (req,res) => {
+    try {
+      const r=await gasConversions.prepare(gasPool,{
+        requestKey:req.body?.requestKey,usdc:req.body?.usdc,
+        expectedPolWei:req.body?.expectedPolWei,
+        treasury:process.env.PHARAOH_TREASURY_WALLET,
+        recipient:process.env.PHARAOH_GAS_POL_WALLET || process.env.PHARAOH_TREASURY_WALLET
+      },gasAdminActor(req));
+      res.status(201).json({success:true,conversion:r});
+    } catch(err){conversionError(res,err);}
+  });
+  app.post('/api/admin/gas-reserve/conversions/:id/reconcile', security.requireAdminKey, async (req,res) => {
+    try {res.json({success:true,conversion:await gasConversions.markReconciliation(gasPool,req.params.id,gasAdminActor(req),req.body?.reason)});}
+    catch(err){conversionError(res,err);}
+  });
+  app.post('/api/admin/gas-reserve/conversions/:id/cancellation-request', security.requireAdminKey, async (req,res) => {
+    try {res.json({success:true,conversion:await gasConversions.requestCancellation(gasPool,req.params.id,gasAdminActor(req),req.body?.reason)});}
+    catch(err){conversionError(res,err);}
+  });
+  app.post('/api/admin/gas-reserve/conversions/:id/verify', security.requireAdminKey, async (req,res) => {
+    try {res.json({success:true,conversion:await gasConversions.verifyConversion(gasPool,req.params.id,req.body?.txHash,gasAdminActor(req),{rpc:process.env.POLYGON_RPC_URL})});}
+    catch(err){conversionError(res,err);}
+  });
+  app.get('/api/admin/gas-reserve/conversions', security.requireAdminKey, async (_req,res) => {
+    try {
+      const results=await gasPool.queryMany(`SELECT id,request_key,chain_id,treasury_wallet,pol_wallet,usdc_atomic::text,
+       expected_pol_wei::text,status,tx_hash,verified_usdc_atomic::text,verified_pol_wei::text,
+       verified_block,verified_block_hash,prepared_at,verified_at FROM pharaoh_gas_conversions ORDER BY id DESC LIMIT 100`);
+      res.json({success:true,conversions:results});
+    }catch(err){conversionError(res,err);}
+  });
+
+  // FASE 8: admin-key-protected, bounded read-only history. No wallet or secrets in responses.
+  app.get('/api/admin/gas-reserve/entries', security.requireAdminKey, async (_req,res) => {
+    try {
+      const entries=await gasPool.queryMany(`SELECT payout_id::text,source_event_key,account_id::text,
+        amount_atomic::text,status,confirmed_payout_tx_hash,available_at,created_at
+        FROM pharaoh_gas_reserve_entries ORDER BY created_at DESC,payout_id DESC LIMIT 200`);
+      res.json({success:true,entries});
+    }catch(err){conversionError(res,err);}
+  });
+  app.get('/api/admin/gas-reserve/conversions/:id/events', security.requireAdminKey, async (req,res) => {
+    try {
+      if(!/^[1-9][0-9]*$/.test(req.params.id))return res.status(400).json({success:false,error:'GAS_CONVERSION_BAD_ID'});
+      const events=await gasPool.queryMany(`SELECT id::text,conversion_id::text,event_type,actor,detail,created_at
+        FROM pharaoh_gas_conversion_events WHERE conversion_id=$1 ORDER BY id DESC LIMIT 200`,[req.params.id]);
+      res.json({success:true,events});
+    }catch(err){conversionError(res,err);}
+  });
+
+  // FASE 6: independently signed attestations; no release path exists.
+  app.post('/api/admin/gas-reserve/conversions/:id/cancellation-attestation', security.requireAdminKey, async (req,res) => {
+    try {
+      const dualControl=require('./gas-cancellation-dual-control');
+      const result=await dualControl.attest(gasPool,{...req.body,conversionId:req.params.id},process.env.PHARAOH_GAS_ADMIN_PUBLIC_KEYS_JSON);
+      res.status(result.replayed?200:201).json({success:true,attestation:result});
+    }catch(err){conversionError(res,err);}
+  });
+
   // ===================================================================
   // QUICK OPTIONS / META
   // ===================================================================

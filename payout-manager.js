@@ -147,6 +147,8 @@ async function createPendingGift({
     throw new Error(`Payout ${eventKey} gia associato a una sigla differente`);
   }
 
+  if (row) await require('./gas-reserve-manager').recordPending(client,row);
+
   if (row?.inserted) {
     await addAudit(row.id, 'CREATED', { eventKey, livello, turno, accountId, accountSigla }, client);
   }
@@ -206,6 +208,7 @@ async function finalizeAttempt(donoId, outcome, dettagli = {}) {
       throw new Error(`Esito payout non valido: ${outcome}`);
     }
     if (!updated) throw new Error('Transizione payout concorrente non completata');
+    if (outcome === 'SENT') await require('./gas-reserve-manager').syncPayout(client,updated);
     await addAudit(donoId, outcome, dettagli, client);
     await client.query('COMMIT');
     return updated;
