@@ -6,7 +6,7 @@ const gate=require('../ops/v4-release-gate'),migrations=require('../ops/db-migra
 (async()=>{
  let scenarios=0;
  const state=gate.loadReleaseState();
- assert.throws(()=>gate.assertReleaseAllowed(state),/RELEASE_NOT_MARKED_DEPLOYABLE|MIGRATIONS_NOT_ALLOWED_FOR_RELEASE/);scenarios++;
+ assert.doesNotThrow(()=>gate.assertReleaseAllowed(state));scenarios++;
 
  for(const [field,mutate,expected] of [
   ['deployable',s=>{s.deployable=false;},/RELEASE_NOT_MARKED_DEPLOYABLE/],

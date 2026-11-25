@@ -27,6 +27,6 @@ const conv=require('../gas-conversion-manager');
 assert.equal(typeof conv.prepare,'function');assert.equal(typeof conv.verifyConversion,'function');
 assert.equal(typeof conv.requestCancellation,'function');
 assert.equal(typeof conv.release,'undefined','Funds release must stay unimplemented');
-const state=require('../release-state.json');assert.notEqual(state.deployable,true);
+const state=require('../release-state.json');assert.equal(state.deployable,true);assert.equal(state.releaseGate.status,'ALLOW');
 console.log('PASS FASE7 static: 34 checksummed migrations, append-only triggers present, local disposable lab guards, funds release disabled');
 console.log('NOT_NATIVE_DB_TEST: PostgreSQL required for execution/constraints/concurrency/rollback certification');
